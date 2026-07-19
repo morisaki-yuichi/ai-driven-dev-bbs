@@ -3,9 +3,9 @@
 //! `Path=/`。`Secure`はHTTP評価環境のため付けない。有効期限は設けない
 //! (decision 0007/0021: セッションと同じ属性に揃える)。
 //!
-//! `build_session_cookie`/`removal_cookie`の呼び出し元(F02ログイン・F03ログアウトの
-//! ハンドラ)はfoundation-plan.md §5の範囲外のため、それまでの間`dead_code`を抑止する。
-//! `SESSION_COOKIE_NAME`はweb/middleware.rsの認証ガードが使う。
+//! `build_session_cookie`はF02ログイン(web/login.rs)が使う。`removal_cookie`の
+//! 呼び出し元(F03ログアウトのハンドラ)はまだ実装されていないため、それまでの間
+//! `dead_code`を抑止する。`SESSION_COOKIE_NAME`はweb/middleware.rsの認証ガードが使う。
 
 #![allow(dead_code)]
 

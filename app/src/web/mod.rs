@@ -21,13 +21,18 @@ use error::AppError;
 /// アプリ全体のルータを構築する。`main.rs`と統合テスト(`tests/`)の両方が
 /// 同じ配線を共有するための入口。
 pub fn build_router(pool: PgPool) -> Router {
+    // ログインのタイミング差を埋めるダミーハッシュ(web/login.rs)を起動時に用意する。
+    // 遅延生成のままだと、最初の1回だけハッシュ生成のコストが上乗せされ、
+    // ならすはずのタイミング差をその1回に作ってしまう。
+    let _ = login::dummy_password_hash();
+
     Router::new()
         // "/" はP03(スレッド一覧画面)。AC09-1によりログイン必須。
         .route("/", get(|| async { "ok" }))
         .route_layer(from_fn_with_state(pool.clone(), middleware::require_auth))
         // P01(ログイン)・P02(登録)は未ログインで到達できる(F01/F02)。
         .route("/register", get(register::show).post(register::submit))
-        .route("/login", get(login::show))
+        .route("/login", get(login::show).post(login::submit))
         // `layout.html`が参照する/static/app.cssの配信。相対パス"static"は
         // ホストの`cargo run`(cwd=app/)・コンテナ(WORKDIR /app、Dockerfileが
         // `COPY static ./static`)のどちらでも実行時cwdからの相対で解決する。

@@ -1,9 +1,6 @@
 //! パスワードハッシュ化(argon2)。平文保存・可逆暗号は行わない(CLAUDE.md セキュリティ必須要件)。
 //!
-//! 呼び出し元(F01登録・F02ログインのハンドラ)はfoundation-plan.md §5の範囲外
-//! (機能実装フェーズ)のため、それまでの間 `dead_code` を抑止する。
-
-#![allow(dead_code)]
+//! `hash`はF01登録(web/register.rs)、`verify`はF02ログイン(web/login.rs)が使う。
 
 use argon2::{
     Argon2,

@@ -4,6 +4,30 @@
 
 {% block content %}
 <h1>ログイン</h1>
-<p>ログイン機能は準備中です(F02で実装予定)。</p>
+
+{# 共通メッセージエリア(common_layout.md §3 / ui-ux-guidelines §2・§4)。
+   register.htmlと同じ理由で、中身が空でも要素自体は常に置く。 #}
+<div class="message-area" role="alert" aria-live="assertive">
+    {% if let Some(msg) = form_message %}
+    <p class="message message-error" id="form-error">{{ msg }}</p>
+    {% endif %}
+</div>
+
+{# novalidate: register.htmlと同じ理由(decision 0023 / ui-ux-guidelines §6)。 #}
+<form method="post" action="/login" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div class="field">
+        <label for="unique_id">ユニークID</label>
+        <input type="text" id="unique_id" name="unique_id" value="{{ unique_id }}" autocomplete="username" required>
+    </div>
+
+    <div class="field">
+        <label for="password">パスワード</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required>
+    </div>
+
+    <button type="submit">ログイン</button>
+</form>
 <a href="/register">新規登録はこちら</a>
 {% endblock %}

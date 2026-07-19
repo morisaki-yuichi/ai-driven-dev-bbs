@@ -35,6 +35,29 @@ pub fn is_unique_violation(error: &sqlx::Error) -> bool {
     )
 }
 
+/// F02ログインの認証情報照合に使う最小限の列。
+pub struct UserCredentials {
+    pub id: i64,
+    pub password_hash: String,
+    pub display_name: String,
+}
+
+/// ユニークIDでユーザーを引く。存在しなければ`None`(呼び出し側はこれと
+/// パスワード不一致を同一の`InvalidCredentials`に潰す。formal/Bbs/Op.leanの
+/// `login`が同じ判断をしている: 列挙攻撃を避けるため区別しない)。
+pub async fn find_by_unique_id(
+    pool: &PgPool,
+    unique_id: &str,
+) -> Result<Option<UserCredentials>, sqlx::Error> {
+    sqlx::query_as!(
+        UserCredentials,
+        "select id, password_hash, display_name from users where unique_id = $1",
+        unique_id
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

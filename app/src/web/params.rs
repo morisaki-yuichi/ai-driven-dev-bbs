@@ -44,6 +44,32 @@ impl HasCsrfToken for RegisterForm {
     }
 }
 
+/// POST /login のフォーム(P01)。decision 0021によりCSRFトークンを必須で持つ。
+#[derive(Deserialize)]
+pub struct LoginForm {
+    pub unique_id: String,
+    pub password: String,
+    pub csrf_token: String,
+}
+
+/// Why-not: `RegisterForm`と同じ理由(このファイル冒頭のコメント参照)で
+/// `#[derive(Debug)]`にしない。
+impl std::fmt::Debug for LoginForm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginForm")
+            .field("unique_id", &self.unique_id)
+            .field("password", &"[redacted]")
+            .field("csrf_token", &"[redacted]")
+            .finish()
+    }
+}
+
+impl HasCsrfToken for LoginForm {
+    fn csrf_token(&self) -> &str {
+        &self.csrf_token
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListParams {
     /// 空文字列は「全件表示」(decision 0011: containsSubstr s "" = true)。
@@ -90,6 +116,19 @@ mod tests {
         assert!(!rendered.contains("TestPassword123!"));
         assert!(!rendered.contains("0f3d-secret"));
         // 伏字にしない項目は追跡できるよう残す。
+        assert!(rendered.contains("testuser_01"));
+    }
+
+    #[test]
+    fn login_form_debug_does_not_leak_password() {
+        let form = LoginForm {
+            unique_id: "testuser_01".to_string(),
+            password: "TestPassword123!".to_string(),
+            csrf_token: "0f3d-secret".to_string(),
+        };
+        let rendered = format!("{form:?}");
+        assert!(!rendered.contains("TestPassword123!"));
+        assert!(!rendered.contains("0f3d-secret"));
         assert!(rendered.contains("testuser_01"));
     }
 
