@@ -56,8 +56,16 @@ pub fn build_session_cookie(token: String) -> Cookie<'static> {
 
 /// ログアウト時にクライアント側のCookieも失効させるための削除用エントリ。
 /// パス属性は発行時と一致させる必要がある(cookie仕様上、パスが違うと別Cookie扱いになる)。
+///
+/// Why: `Cookie::build(name).path("/").build()`のように値・有効期限を指定しないだけの
+/// エントリは、ブラウザに対して「このCookieを消せ」という指示にならない
+/// (単に空値のCookieを新規発行するSet-Cookieにしかならない)。`make_removal()`が
+/// 値を空にし`Max-Age=0`・過去日時の`Expires`を設定して初めて、ブラウザ側の
+/// 削除指示として機能する(`cookie`クレートの仕様)。
 pub fn removal_cookie() -> Cookie<'static> {
-    Cookie::build(SESSION_COOKIE_NAME).path("/").build()
+    let mut cookie = base_cookie(SESSION_COOKIE_NAME, String::new());
+    cookie.make_removal();
+    cookie
 }
 
 /// decision 0021: CSRFトークンCookieを発行する。ワンタイムにせず、Cookieの
