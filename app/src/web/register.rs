@@ -153,22 +153,41 @@ pub async fn submit(
         .await
         .map_err(|e| AppError::Internal(format!("password hashing task panicked: {e}")))??;
 
-    match db::users::insert(
-        &pool,
-        &form.unique_id,
-        &password_hash,
-        &trimmed_display_name,
-    )
-    .await
-    {
+    // decision 0002(critical): ハンドラの入口でトランザクションを開始し、Errを
+    // 返す経路では必ずロールバックする規律を`db::with_transaction`に集約している
+    // (foundation-plan.md §3)。この操作は書き込みが`insert`一度きりなので
+    // 実質的な効果は従来と変わらないが、書き方をlogin.rs・logout.rsと揃える。
+    let unique_id = form.unique_id.clone();
+    let result = db::with_transaction(&pool, move |mut tx| async move {
+        let _id = db::users::insert(&mut *tx, &unique_id, &password_hash, &trimmed_display_name)
+            .await
+            // Why: 重複を検出した経路は`Err`で抜ける。ここで再描画したレスポンスを
+            // `Ok`として返すと`with_transaction`が`commit`を呼ぶが、23505を起こした
+            // トランザクションはPostgres側で既にアボート状態にあり、commitは
+            // 暗黙のROLLBACKになる(意図した終わり方と実際の終わり方が食い違う)。
+            // `Err`で抜ければ`tx`はcommitされずにdropされ、sqlxが明示的に
+            // ROLLBACKを送る —— decision 0002のNoWriteOnErrorが、
+            // 「たまたまそうなる」ではなく構造として保証される。
+            .map_err(|e| match db::users::is_unique_violation(&e) {
+                true => AppError::Domain(DomainError::DuplicateUniqueId),
+                false => AppError::from(e),
+            })?;
         // C-18: 登録はセッションを作らない。AC01-5: ログイン画面へリダイレクトする。
-        Ok(_id) => Ok(Redirect::to("/login").into_response()),
-        Err(e) if db::users::is_unique_violation(&e) => Ok(render_form(
+        Ok((Redirect::to("/login").into_response(), tx))
+    })
+    .await;
+
+    match result {
+        Ok(response) => Ok(response),
+        // AC01-4: 重複は500やエラーページではなく、登録画面のユニークID欄への
+        // インライン表示として返す(ui-ux-guidelinesの二重バリデーション要件)。
+        // `AppError`の既定の写像(error.rs)は400を返すので、ここで捕まえる。
+        Err(AppError::Domain(DomainError::DuplicateUniqueId)) => Ok(render_form(
             csrf_token,
             &form.unique_id,
             &form.display_name,
             Some(DomainError::DuplicateUniqueId),
         )),
-        Err(e) => Err(AppError::from(e)),
+        Err(e) => Err(e),
     }
 }
