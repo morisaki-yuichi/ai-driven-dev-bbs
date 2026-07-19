@@ -1,0 +1,26 @@
+# セッションログ: 2026-07-19 #10 フェーズ3 評価ハーネス適合の基盤固め
+
+- フェーズ: 3
+- 今回やったこと:
+    - 新セッション冒頭の指示どおり、`CLAUDE.md`、`dev-docs/foundation-plan.md`、`dev-docs/decisions/README.md`、直近のセッションログ（`#09`）を読み状態把握した。続けて `dev-docs/harness-invariants.md`、`README.md`、`dev-docs/ui-ux-guidelines.md`、`.claude/settings.json`／`.claude/settings.local.json`、`.claude/hooks/remind-decision-log.sh`、`dev-docs/decisions/0001-readme-editing-policy.md`、セッションログ `#08` を読み、既存計画の到達点を確認した。
+    - SETUP.md の置き場所（リポジトリ直下 vs `dev-docs/` 配下）について、`AskUserQuestion` でユーザーに確認した。ユーザーは「リポジトリ直下 `SETUP.md`（既存計画どおり）」を選択。
+    - `/log-decision` で **decision 0018**（セットアップ・起動手順ドキュメントの配置とREADME参照方針。importance: minor、decided_by: ai+user）を新規作成し、`dev-docs/decisions/README.md` の一覧テーブルと `decided_by = ai` 索引の説明文（範囲を0001〜0018に更新）を反映した。
+    - `dev-docs/foundation-plan.md` §4.1 に「`migrations/*.sql` はDDLのみとし、シードデータの`INSERT`を含めない（H-11）」を追記した。他の§4記述（マイグレーション適用経路・`.sqlx/`オフラインキャッシュ・空DBへのリセット手順・README追記範囲）は既にフェーズ2で「空DBからの逐次E2E（シナリオ01→05、シード無し、テスト間でDBを消さない）」の要件を満たしていることを確認し、変更していない。
+    - `dev-docs/ui-ux-guidelines.md` §6 を確認し、`agent-browser` 操作性の方針（隠し要素へのアクション禁止・極端に操作性の悪いデザインの回避・H-02）が既にフェーズ2で明記済みであることを確認した（追記不要と判断）。
+    - `.claude/hooks/remind-decision-log.sh` のスモークテストを実施した。`app/src/dummy.rs` を作成して実装ソースの「変更あり」を再現し、`git stash push --include-untracked -- dev-docs/decisions` で当セッション中の decisions への変更を一時退避して、テストごとに git 状態を制御した。
+        - **偽陰性テスト**: `app/src` 変更あり・`dev-docs/decisions` 変更なし・`stop_hook_active=false` → リマインダの `systemMessage` が出力された（期待通り＝発火）。
+        - **偽陽性テスト①**: 同じ git 状態で `stop_hook_active=true` → 無出力（期待通り＝2回目のブロックをしない）。
+        - **偽陽性テスト②**: `app/src` の変更を削除（`dev-docs/decisions` のみ変更が残る状態）・`stop_hook_active=false` → 無出力（期待通り＝実装ソースに変更が無いセッションでは非発火）。
+        - テスト後、`git stash pop` で `dev-docs/decisions` の変更を復元し、`app/` ディレクトリを削除して作業ツリーをテスト前の状態に戻した（`git status` で最終確認済み）。
+- 決めたこと:
+    - SETUP.md はリポジトリ直下に置く。内容は「初回セットアップ／アプリの起動／評価をやり直す場合（空DBへのリセット、D14）」の3セクション構成とし、H-06の2つの固定プロンプト（セットアップ・起動）に対応させる。README.mdへの追記は `SETUP.md` へのリンク1行のみ。実際のファイル作成とREADME追記は `foundation-plan.md` §5 の #1〜#13（compose・Dockerfile・migrations・`.sqlx/`・ドメイン層等）が揃ってから行う（decision 0018）。
+    - `migrations/*.sql` はスキーマ定義（DDL）のみとし、シードデータの投入を禁止する方針を `foundation-plan.md` §4.1 に明記した（H-08／H-11の静かな違反を予防）。
+    - Stopフックの3スモークテスト（偽陰性1件・偽陽性2件）はすべて期待通りの挙動を確認した。フックの現行設計（`stop_hook_active` による多重発火抑止／`dev-docs/decisions` の変更有無による成果物ベースの抑止）は変更せず、現状のまま運用を継続する。
+- 次にやること:
+    - `dev-docs/foundation-plan.md` §5 の実装前基盤 #1〜#13（`rust-toolchain.toml`/`Cargo.toml`固定、`compose.yaml`、`Dockerfile`、`migrations/0001_init.sql` + `sqlx::migrate!`、`.sqlx/`オフラインキャッシュ、`error.rs`、`web/middleware.rs`、`db/sessions.rs`+argon2、`templates/layout.html`、`domain/`の定数、`web/params.rs`、`domain/`の骨格、`tests/`の`#[sqlx::test]`ひな形）に着手し、`docker compose up` で起動できる骨格を作る実装フェーズに入る。
+    - 着手初回セッションで decision 0016 §5.2 のBバンド（(a)〜(d)）を実測し、予測との乖離を decision 0016 の変更履歴に追記する。あわせて decision 0011（`LIKE`の大文字小文字）・decision 0003（ユニークIDの扱い）をPostgreSQL上で実測確認する（前セッションから継続の未着手項目）。
+    - `foundation-plan.md` §5 #14（`SETUP.md`作成＋README.mdへのリンク追記）は #1〜#13 完了後に着手する（decision 0018）。
+- 未解決事項:
+    - **D02**（スキーマ詳細）、**D05**（CSRF対策の要否）、**D06**（POST-Redirect-GETの採否）、**D10**（P06のパス不整合）、**D14**（空DBへ戻す手段。方針は decision 0018 で確定したが `SETUP.md` 自体は未作成）、**D18**（削除確認ダイアログ）、**D19**（スクロール連携の方式）、**D20**（ログイン後の復帰先）— いずれも引き続き未決定（変化なし）。
+    - **Askamaのバージョンリスク**・**`.sqlx/`更新忘れリスク**・**Bバンド予測の未検証** — 前セッションから持ち越し、変化なし。
+    - 基盤構築フェーズ（フェーズ1〜3）で計画・決定すべき事項は本セッションで一区切りついた。次セッションからは `foundation-plan.md` §5 に従った実装フェーズに入る。
