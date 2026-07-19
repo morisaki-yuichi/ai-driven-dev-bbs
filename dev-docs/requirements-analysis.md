@@ -292,6 +292,7 @@ AC は原典（`docs/product/issues/*.md`）のチェックリストを機能ご
 > | D01（レンダリング方式・永続化方式） | 一部決着（SSR/MPA 限定・RDBMS 前提）。言語/FW は未定 | [0008](decisions/0008-browser-back-is-out-of-model.md), [0002](decisions/0002-action-failure-semantics.md), [0007](decisions/0007-session-multiplicity.md) |
 > | D03（表示名の反映方式） | 決着（JOIN 解決） | [0015](decisions/0015-display-name-resolution.md) |
 > | D04（セッション） | 決着（多重可・DB永続化・無期限） | [0007](decisions/0007-session-multiplicity.md) |
+> | D05（CSRF対策の方式） | 決着（Origin検証 + セッション非依存の二重送信トークン。未ログインPOSTも保護対象・トークンは非ワンタイム） | [0021](decisions/0021-csrf-protection.md) |
 > | D07（検索の照合方式） | 決着（部分一致・正規化なし・空クエリは全件） | [0011](decisions/0011-search-matching-and-normalization.md) |
 > | D08（削除済みコメントの検索） | 決着（元本文ごと除外） | [0012](decisions/0012-search-scope.md) |
 > | D09（タイトルの検索対象） | 決着（含めない） | [0012](decisions/0012-search-scope.md) |
@@ -301,7 +302,7 @@ AC は原典（`docs/product/issues/*.md`）のチェックリストを機能ご
 > | D15（文字数の単位） | 決着（コードポイント） | [0003](decisions/0003-character-counting-and-charset.md) |
 > | D16（未定義の入力制限） | 決着（トリム方針・表示名の下限・ユニークIDの文字種） | [0003](decisions/0003-character-counting-and-charset.md), [0004](decisions/0004-empty-input-definition.md), [0005](decisions/0005-display-name-emptiness.md) |
 > | D17（タイムゾーン） | 決着（保存UTC・表示JST・ミリ秒精度） | [0009](decisions/0009-time-granularity-and-sort-tiebreak.md) |
-> | D02, D05, D06, D10, D14, D18, D19, D20 | **未決定** | — |
+> | D02, D06, D10, D14, D18, D19, D20 | **未決定** | — |
 >
 > 形式化の過程で新たに判明し、原典の論点表に対応が無かったもの: [0002](decisions/0002-action-failure-semantics.md)（失敗時の状態）、
 > [0010](decisions/0010-last-updated-derivation.md)（最終更新日時の導出）、[0013](decisions/0013-pagination-edge-cases.md)（ページ境界）、
