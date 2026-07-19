@@ -17,7 +17,7 @@ use sqlx::PgPool;
 use crate::db;
 use crate::domain::model::Error as DomainError;
 use crate::web::cookies::build_session_cookie;
-use crate::web::csrf::{CsrfForm, CsrfToken};
+use crate::web::csrf::{CsrfForm, CsrfToken, rotate_csrf_cookie};
 use crate::web::error::AppError;
 use crate::web::params::LoginForm;
 use crate::web::views::CurrentUser;
@@ -155,5 +155,8 @@ pub async fn submit(
         AppError::Internal(format!("session cookie is not a valid header value: {e}"))
     })?;
     response.headers_mut().append(header::SET_COOKIE, value);
+    // decision 0021 決定5: ログイン成功時にCSRFトークンをローテーションする
+    // (F01から持ち越されていた実装。F02のスコープ)。
+    rotate_csrf_cookie(&mut response);
     Ok(response)
 }
