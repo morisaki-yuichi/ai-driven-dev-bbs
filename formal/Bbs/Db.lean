@@ -117,6 +117,19 @@ def liftOption (o : Option α) (e : Error) : Action α :=
   | some a => pure a
   | none => fail e
 
+/-- `liftOption`の逆向き：`none`なら成功、`some`ならその値からエラーを組み立てて
+    失敗する（早期リターン式の妥当性検査に使う。例: register の表示名検査・
+    重複検査）。`register`をこの補助で書くと、do記法の中に`match`が直接複数
+    現れなくなる。Lean の do 記法は同一do ブロック内に複数の早期リターン用
+    `match`があると継続を共有する join point を作る形にコンパイルされ、
+    `Action.bind x f`という単純形にならない。その結果`register_atomic`の証明で
+    `split`タクティクが自己参照的な判別式（生成元と適用先が同じ状態）を
+    扱えず内部エラーになる（decision対象外・実装上の回避）。 -/
+def guardNone (o : Option β) (mk : β → Error) : Action Unit :=
+  match o with
+  | some b => fail (mk b)
+  | none => pure ()
+
 end Action
 
 instance : Monad Action where

@@ -15,6 +15,11 @@ pub enum AppError {
     Domain(DomainError),
     Sqlx(sqlx::Error),
     Template(askama::Error),
+    /// decision 0021: 二重送信トークン不一致 / Origin不一致。C-10(404)とは別に
+    /// 403として扱う(リソースの存否とは無関係な検証失敗のため)。
+    Csrf,
+    /// 通常起こらない内部エラー(パスワードハッシュ化失敗等)。
+    Internal(String),
 }
 
 impl From<DomainError> for AppError {
@@ -35,9 +40,21 @@ impl From<askama::Error> for AppError {
     }
 }
 
+impl From<argon2::password_hash::Error> for AppError {
+    fn from(e: argon2::password_hash::Error) -> Self {
+        AppError::Internal(e.to_string())
+    }
+}
+
 #[derive(Template)]
 #[template(path = "error.html")]
 struct NotFoundTemplate {
+    current_user: Option<CurrentUser>,
+}
+
+#[derive(Template)]
+#[template(path = "csrf_error.html")]
+struct CsrfErrorTemplate {
     current_user: Option<CurrentUser>,
 }
 
@@ -71,6 +88,11 @@ impl IntoResponse for AppError {
                 tracing::error!(error = %e, "template render error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
             }
+            AppError::Csrf => csrf_error(),
+            AppError::Internal(msg) => {
+                tracing::error!(error = %msg, "internal error");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+            }
         }
     }
 }
@@ -83,6 +105,19 @@ fn not_found() -> Response {
         Err(e) => {
             tracing::error!(error = %e, "failed to render error page");
             (StatusCode::NOT_FOUND, "Not Found").into_response()
+        }
+    }
+}
+
+// decision 0021 決定5: 検証失敗時はHTTP 403 + 専用エラー画面。リダイレクトで
+// 握り潰さない(失敗が観測できなくなるため)。
+fn csrf_error() -> Response {
+    let tmpl = CsrfErrorTemplate { current_user: None };
+    match tmpl.render() {
+        Ok(body) => (StatusCode::FORBIDDEN, Html(body)).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render csrf error page");
+            (StatusCode::FORBIDDEN, "Forbidden").into_response()
         }
     }
 }

@@ -10,7 +10,39 @@
 
 use std::collections::HashMap;
 
+use serde::Deserialize;
+
 use crate::domain::query::SortKey;
+use crate::web::csrf::HasCsrfToken;
+
+/// POST /register のフォーム(P02)。decision 0021によりCSRFトークンを必須で持つ。
+#[derive(Deserialize)]
+pub struct RegisterForm {
+    pub unique_id: String,
+    pub password: String,
+    pub display_name: String,
+    pub csrf_token: String,
+}
+
+/// Why-not: `#[derive(Debug)]` にしない。この構造体はハンドラのエラー経路や
+/// `tracing` のイベントに載りうるため、derive のままだと平文パスワードが
+/// ログ・パニックメッセージへそのまま出る。パスワードとCSRFトークンは伏字にする。
+impl std::fmt::Debug for RegisterForm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterForm")
+            .field("unique_id", &self.unique_id)
+            .field("password", &"[redacted]")
+            .field("display_name", &self.display_name)
+            .field("csrf_token", &"[redacted]")
+            .finish()
+    }
+}
+
+impl HasCsrfToken for RegisterForm {
+    fn csrf_token(&self) -> &str {
+        &self.csrf_token
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListParams {
@@ -44,6 +76,21 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn register_form_debug_does_not_leak_password() {
+        let form = RegisterForm {
+            unique_id: "testuser_01".to_string(),
+            password: "TestPassword123!".to_string(),
+            display_name: "テストユーザー01".to_string(),
+            csrf_token: "0f3d-secret".to_string(),
+        };
+        let rendered = format!("{form:?}");
+        assert!(!rendered.contains("TestPassword123!"));
+        assert!(!rendered.contains("0f3d-secret"));
+        // 伏字にしない項目は追跡できるよう残す。
+        assert!(rendered.contains("testuser_01"));
     }
 
     #[test]

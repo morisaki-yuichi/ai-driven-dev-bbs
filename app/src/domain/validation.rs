@@ -1,8 +1,9 @@
 //! formal/Bbs/Validation.lean の対応先。C-02(パスワード強度)/C-03(表示名)/
 //! C-04(ユニークID)/AC05-2・AC07-2(空チェック)を純粋な述語として実装する。
+//! `register_validation`はF01登録ハンドラが使う(F04〜F07は未実装)。
 //!
-//! 呼び出し元(F01登録・F04プロフィール編集・F05スレッド作成・F07コメント作成の
-//! ハンドラ)はfoundation-plan.md §5の範囲外(機能実装フェーズ)のため、それまでの間
+//! F04プロフィール編集・F05スレッド作成・F07コメント作成のハンドラは
+//! foundation-plan.md §5の範囲外(機能実装フェーズ)のため、それまでの間
 //! `dead_code` を抑止する。
 //!
 //! ### 文字数の数え方(decision 0003)
@@ -104,12 +105,40 @@ pub fn display_name_valid(n: &str) -> bool {
 /// C-04が要求するのは一意性のみで、文字種・長さ・大文字小文字の同一視は
 /// 一切規定がない(decision 0003)。ここでは最小限「空でない」だけを形式条件とし、
 /// それ以上の制限は置かない。一意性の判定はDBを見る必要があるためdb/層の責務。
+///
+/// 「空」の判定は`display_name`と同じくトリム後に行う(decision 0004)。
+/// Why-not: `!u.is_empty()`だと空白のみのIDが通ってしまい、AC05-2/AC07-2で
+/// 「空」と定義した基準と同じ画面上で扱いが食い違う。
 pub fn unique_id_well_formed(u: &str) -> bool {
-    !u.is_empty()
+    !is_blank(u)
 }
 
 pub fn non_empty_text(s: &str) -> bool {
     !is_blank(s)
+}
+
+/// F01登録の項目間検査順序(decision 0006): 形式検査 → 強度検査 → 表示名検査の順で
+/// 最初に失敗した項目のエラーのみを返す。ユニークID重複はDBを見る必要があるため
+/// ここに含めない(Action層 = db/users.rsの責務、formal/Bbs/Op.lean `register` の
+/// 後半に対応)。成功時はトリム済みの表示名を返す(decision 0004: 保存はトリム後の値)。
+/// この検査列の場合分けは`formal/Bbs/Invariant.lean`の`register_atomic`が
+/// オラクルとして参照した`register`の実装と一致させてある。
+pub fn register_validation(
+    unique_id: &str,
+    password: &str,
+    display_name: &str,
+) -> Result<String, ValidationFailure> {
+    if !unique_id_well_formed(unique_id) {
+        return Err(ValidationFailure::UniqueIdInvalid);
+    }
+    let weaknesses = password_weaknesses(password);
+    if !weaknesses.is_empty() {
+        return Err(ValidationFailure::PasswordWeak(weaknesses));
+    }
+    if let Some(failure) = display_name_failure(display_name) {
+        return Err(failure);
+    }
+    Ok(trim(display_name))
 }
 
 #[cfg(test)]
@@ -184,8 +213,55 @@ mod tests {
     }
 
     #[test]
-    fn unique_id_well_formed_rejects_only_empty_string() {
+    fn unique_id_well_formed_rejects_blank_like_display_name() {
         assert!(unique_id_well_formed("testuser_01"));
         assert!(!unique_id_well_formed(""));
+        // 空白のみのIDは「空」と同じ扱いにする(decision 0004の空の定義を適用)。
+        assert!(!unique_id_well_formed("   "));
+        assert!(!unique_id_well_formed("　　"));
+        assert!(!unique_id_well_formed("\u{00A0}"));
+    }
+
+    #[test]
+    fn register_validation_rejects_blank_unique_id_before_checking_password() {
+        let result = register_validation("　　", "password", "テストユーザー01");
+        assert_eq!(result, Err(ValidationFailure::UniqueIdInvalid));
+    }
+
+    #[test]
+    fn register_validation_succeeds_and_trims_display_name_like_scenario_01_1_6() {
+        // シナリオ01-1-6: testuser_01 / TestPassword123! / テストユーザー01
+        let result = register_validation("testuser_01", "TestPassword123!", " テストユーザー01 ");
+        assert_eq!(result, Ok("テストユーザー01".to_string()));
+    }
+
+    #[test]
+    fn register_validation_reports_password_weaknesses_like_scenario_01_1_5() {
+        // register_atomicの証明が確定した順序: 形式検査(uniqueId)は通過し、
+        // 次の強度検査で"password"の全違反がまとめて返る(display nameは未検査)。
+        let result = register_validation("testuser_01", "password", "テストユーザー01");
+        assert_eq!(
+            result,
+            Err(ValidationFailure::PasswordWeak(vec![
+                PasswordWeakness::TooShort,
+                PasswordWeakness::NoDigit,
+                PasswordWeakness::NoSymbol,
+            ]))
+        );
+    }
+
+    #[test]
+    fn register_validation_rejects_empty_unique_id_before_checking_password() {
+        // 空IDと弱いパスワードが同時に不正でも、形式検査(ID)が先に失敗する
+        // (decision 0006: 形式→強度→表示名の順で最初の1件のみ返す)。
+        let result = register_validation("", "password", "テストユーザー01");
+        assert_eq!(result, Err(ValidationFailure::UniqueIdInvalid));
+    }
+
+    #[test]
+    fn register_validation_rejects_display_name_only_after_id_and_password_pass() {
+        let too_long = "あいうえおかきくけこさしすせそた";
+        let result = register_validation("testuser_01", "TestPassword123!", too_long);
+        assert_eq!(result, Err(ValidationFailure::DisplayNameTooLong));
     }
 }

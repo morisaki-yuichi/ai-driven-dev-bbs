@@ -1,1 +1,46 @@
 /* 最小限のプレーンCSS。画面実装(UI着手タスク)で拡充する。decision 0016 §6.3 J-3。 */
+
+/* 共通メッセージエリア(common_layout.md §3)。空のときは領域を占有しないが、
+   要素自体はDOMに残す(aria-liveの通知を拾わせるため。register.html のコメント参照)。 */
+.message {
+    border-radius: 4px;
+    margin: 0 0 1rem;
+    padding: 0.75rem 1rem;
+}
+
+.message-success {
+    background: #e6f4ea;
+    color: #14532d;
+}
+
+.message-error {
+    background: #fdecea;
+    color: #8a1020;
+}
+
+.field {
+    margin-bottom: 1rem;
+}
+
+.field label {
+    display: block;
+    margin-bottom: 0.25rem;
+}
+
+.field-hint {
+    color: #555;
+    font-size: 0.9em;
+    margin: 0.25rem 0;
+}
+
+/* 色だけに依存しないよう、常に文言(赤系は補助)と併用する(ui-ux-guidelines §4)。 */
+.field-error {
+    color: #b00020;
+    font-size: 0.9em;
+    margin: 0.25rem 0;
+    padding-left: 1.2em;
+}
+
+.field-error:empty {
+    display: none;
+}

@@ -61,13 +61,10 @@ def register (uniqueId password displayName : String) : Action UserId := do
   ensure (Validation.uniqueIdWellFormed uniqueId) (.validation .uniqueIdInvalid)
   let weak := Validation.passwordWeaknesses password
   ensure weak.isEmpty (.validation (.passwordWeak weak))
-  match Validation.displayNameFailure displayName with
-  | some v => fail (.validation v)
-  | none => Action.pure ()
+  guardNone (Validation.displayNameFailure displayName) .validation
   let displayName := Validation.trim displayName   -- decision 0004
-  match ← findUserByUniqueId uniqueId with
-  | some _ => fail .duplicateUniqueId
-  | none => Action.pure ()
+  let existing ← findUserByUniqueId uniqueId
+  guardNone existing (fun _ => .duplicateUniqueId)
   let s ← get
   let uid := s.nextUserId
   set { s with

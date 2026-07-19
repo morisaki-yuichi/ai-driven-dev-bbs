@@ -87,8 +87,12 @@ def displayNameValid (n : String) : Bool := (displayNameFailure n).isNone
 /-- C-04 が要求するのは**一意性のみ**で、文字種・長さ・大文字小文字の
     同一視は一切規定がない（D16 / decision 0003）。
     ここでは最小限「空でない」だけを形式条件とし、それ以上の制限は置かない。
-    一意性は Db を見ないと判定できないので Op 側で扱う。 -/
-def uniqueIdWellFormed (u : String) : Bool := u.length > 0
+    一意性は Db を見ないと判定できないので Op 側で扱う。
+
+    「空」は `displayNameFailure` と同じく**トリム後**で判定する（decision 0004）。
+    Why-not: `u.length > 0` だと空白のみのIDが通り、AC05-2 / AC07-2 で定義した
+    「空」の基準と食い違う。 -/
+def uniqueIdWellFormed (u : String) : Bool := !isBlank u
 
 def nonEmptyText (s : String) : Bool := !isBlank s
 

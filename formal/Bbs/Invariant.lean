@@ -43,8 +43,130 @@ theorem wf_empty : Wf Db.empty := by sorry
 def NoWriteOnError (x : Action α) : Prop :=
   ∀ s e s', x s = (.error e, s') → s' = s
 
+/-! #### 補助: `bind` の合成則（F01 の証明で使う）
+
+`register` は「検査を重ねる間は状態を一切書き換えず、最後に一度だけ `set` する」
+という構造をしている。この構造から `NoWriteOnError` を導くには、
+**成功時にも状態を変えない**性質（`NoWriteOnSuccess`）を補助的に立て、
+`Action.bind` がこの2性質をどう合成するかを先に示しておくのが素直。
+`Action.bind` の定義（失敗時は束縛前の `s` へ戻す）そのものを使う。 -/
+
+def NoWriteOnSuccess (x : Action α) : Prop :=
+  ∀ s a s', x s = (.ok a, s') → s' = s
+
+theorem bind_noWriteOnError {x : Action α} {f : α → Action β}
+    (hx : NoWriteOnSuccess x) (hf : ∀ a, NoWriteOnError (f a)) :
+    NoWriteOnError (Action.bind x f) := by
+  intro s e s' h
+  unfold Action.bind at h
+  cases hxs : x s with
+  | mk r s1 =>
+    rw [hxs] at h
+    cases r with
+    | error e0 => exact (congrArg Prod.snd h).symm
+    | ok a =>
+      have hs1 : s1 = s := hx s a s1 hxs
+      rw [hs1] at h
+      exact hf a s e s' h
+
+theorem bind_noWriteOnSuccess {x : Action α} {f : α → Action β}
+    (hx : NoWriteOnSuccess x) (hf : ∀ a, NoWriteOnSuccess (f a)) :
+    NoWriteOnSuccess (Action.bind x f) := by
+  intro s b s' h
+  unfold Action.bind at h
+  cases hxs : x s with
+  | mk r s1 =>
+    rw [hxs] at h
+    cases r with
+    | error e0 => injection h with h1 _; injection h1
+    | ok a =>
+      have hs1 : s1 = s := hx s a s1 hxs
+      rw [hs1] at h
+      exact hf a s b s' h
+
+theorem pure_noWriteOnError (a : α) : NoWriteOnError (Action.pure a) := by
+  intro s e s' h; exact (congrArg Prod.snd h).symm
+
+theorem pure_noWriteOnSuccess (a : α) : NoWriteOnSuccess (Action.pure a) := by
+  intro s a' s' h; exact (congrArg Prod.snd h).symm
+
+theorem fail_noWriteOnError (e : Error) :
+    NoWriteOnError (α := α) (Action.fail e) := by
+  intro s e' s' h; exact (congrArg Prod.snd h).symm
+
+theorem fail_noWriteOnSuccess (e : Error) :
+    NoWriteOnSuccess (α := α) (Action.fail e) := by
+  intro s a s' h
+  unfold Action.fail at h
+  injection h with h1 _
+  injection h1
+
+theorem ensure_noWriteOnError (b : Bool) (e : Error) :
+    NoWriteOnError (Action.ensure b e) := by
+  cases b
+  · simp only [Action.ensure]; exact fail_noWriteOnError e
+  · simp only [Action.ensure]; exact pure_noWriteOnError ()
+
+theorem ensure_noWriteOnSuccess (b : Bool) (e : Error) :
+    NoWriteOnSuccess (Action.ensure b e) := by
+  cases b
+  · simp only [Action.ensure]; exact fail_noWriteOnSuccess e
+  · simp only [Action.ensure]; exact pure_noWriteOnSuccess ()
+
+theorem get_noWriteOnSuccess : NoWriteOnSuccess (α := Db) Action.get := by
+  intro s a s' h; exact (congrArg Prod.snd h).symm
+
+theorem get_noWriteOnError : NoWriteOnError (α := Db) Action.get := by
+  intro s e s' h
+  unfold Action.get at h
+  injection h with h1 _
+  injection h1
+
+theorem findUserByUniqueId_noWriteOnSuccess (u : String) :
+    NoWriteOnSuccess (findUserByUniqueId u) := by
+  unfold findUserByUniqueId
+  exact bind_noWriteOnSuccess get_noWriteOnSuccess fun s => pure_noWriteOnSuccess _
+
+/-- `guardNone`(`register`の表示名検査・重複検査で使う早期リターン)は、
+    `some`なら`fail`、`none`なら何もしないので、どちらの分岐でも状態は変わらない。 -/
+theorem guardNone_noWriteOnSuccess {γ : Type} (o : Option γ) (mk : γ → Error) :
+    NoWriteOnSuccess (Action.guardNone o mk) := by
+  unfold Action.guardNone
+  cases o with
+  | some v => exact fail_noWriteOnSuccess (mk v)
+  | none => exact pure_noWriteOnSuccess ()
+
+/-- F01 登録の原子性（decision 0002）。`register` は
+    形式検査 → 強度検査 → 表示名検査 → 重複検査、の順に検査を重ねるだけで、
+    どの検査でも実際に `Db` を書き換えるのは検査を全て通過した最後の `set` の
+    一度きりである。ゆえに途中で失敗すれば `Action.bind` の巻き戻しにより
+    呼び出し前の状態がそのまま返る。
+    (実装メモ: 表示名検査・重複検査をdo記法内に直接`match`で書くと、Leanの
+     do記法コンパイラが2つの早期リターン用matchの継続を共有する「join point」
+     形式(`have __do_jp := ...`)にelaborateされ、`Action.bind x f`という単純形に
+     ならず`apply`ベースの合成証明が成立しない。`register`の定義を`guardNone`
+     (`Bbs.Db`)経由に書き換えることでこの問題を避けている。) -/
 theorem register_atomic (u p d : String) :
-    NoWriteOnError (register u p d) := by sorry
+    NoWriteOnError (register u p d) := by
+  unfold register
+  apply bind_noWriteOnError (ensure_noWriteOnSuccess _ _)
+  intro _
+  apply bind_noWriteOnError (ensure_noWriteOnSuccess _ _)
+  intro _
+  apply bind_noWriteOnError (guardNone_noWriteOnSuccess _ _)
+  intro _
+  apply bind_noWriteOnError (findUserByUniqueId_noWriteOnSuccess u)
+  intro _
+  apply bind_noWriteOnError (guardNone_noWriteOnSuccess _ _)
+  intro _
+  apply bind_noWriteOnError get_noWriteOnSuccess
+  intro s
+  -- 残るは `set` してから `pure` するだけの末尾で、これは絶対に失敗しない
+  -- (NoWriteOnErrorは空虚に真)。
+  intro s0 e s' h
+  simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.set, Action.pure] at h
+  injection h with h1 _
+  injection h1
 
 theorem createThread_atomic (sid : SessionId) (t b : String) :
     NoWriteOnError (createThread sid t b) := by sorry

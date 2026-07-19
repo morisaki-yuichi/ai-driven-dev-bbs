@@ -1,0 +1,65 @@
+{% extends "layout.html" %}
+
+{% block title %}新規登録{% endblock %}
+
+{% block content %}
+<h1>新規登録</h1>
+
+{# 共通メッセージエリア(common_layout.md §3 / ui-ux-guidelines §2・§4)。
+   中身が空でも要素自体は常に置く: aria-live は「既にDOMにある領域の変化」を
+   読み上げる仕組みなので、メッセージと一緒に領域ごと出現させると通知が拾われない。 #}
+<div class="message-area" role="alert" aria-live="assertive">
+    {% if let Some(msg) = form_message %}
+    <p class="message message-error">{{ msg }}</p>
+    {% endif %}
+</div>
+
+{# novalidate: ネイティブ検証バブルは agent-browser から読めないため無効化し、
+   検証はサーバ側に一本化する(decision 0023 / ui-ux-guidelines §6)。
+   required・maxlength 等の属性はセマンティクスとして残す。 #}
+<form method="post" action="/register" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div class="field">
+        <label for="unique_id">ユニークID</label>
+        <input type="text" id="unique_id" name="unique_id" value="{{ unique_id }}" autocomplete="username" required>
+        {% if let Some(msg) = unique_id_error %}
+        <p class="field-error">{{ msg }}</p>
+        {% endif %}
+    </div>
+
+    <div class="field">
+        <label for="password">パスワード</label>
+        <input type="password" id="password" name="password" autocomplete="new-password" required minlength="12">
+        <p class="field-hint">12文字以上・英字/数字/記号をすべて含めてください。</p>
+        <ul class="field-error">
+            {% for msg in password_errors %}
+            <li>{{ msg }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <div class="field">
+        <label for="display_name">表示名</label>
+        {# Why-not: maxlength をコードポイント数に合わせる補正は入れない。
+           HTML の maxlength は **UTF-16 コードユニット単位**で数えるのに対し、
+           サーバ側の C-03 判定は **コードポイント単位**(decision 0003 /
+           domain/validation.rs)であり、BMP 外の文字(絵文字・一部の漢字など
+           サロゲートペアを要する文字)を含む表示名では両者が食い違う。
+           例: 絵文字15個は maxlength から見ると30カウントで先に打ち止めになるが、
+           サーバ側の基準では15文字ちょうどで妥当。
+           それでも据え置くのは、(1) 評価シナリオが使う表示名は
+           「テストユーザー01」等すべて BMP 内で乖離が起きないこと、
+           (2) 乖離が起きても maxlength は入力を**厳しい側**に丸めるだけで、
+           サーバ側の判定(唯一の正典)を緩めることはないため。
+           揃えるにはコードポイント単位で数える JS が要り、それは
+           decision 0008(SSR/MPA)の前提を越える新たな設計判断になる。 #}
+        <input type="text" id="display_name" name="display_name" value="{{ display_name }}" required maxlength="15">
+        {% if let Some(msg) = display_name_error %}
+        <p class="field-error">{{ msg }}</p>
+        {% endif %}
+    </div>
+
+    <button type="submit">登録</button>
+</form>
+{% endblock %}
