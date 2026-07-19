@@ -1,0 +1,26 @@
+# セッションログ: 2026-07-19 #09 フェーズ2レビューの反映
+
+- フェーズ: 2
+- 今回やったこと:
+    - `dev-docs/reviews/phase2-review.md`（別セッションによる独立レビュー）、被レビュー成果物（`CLAUDE.md`／`.claude/skills/log-decision/`・`log-session/`／`.claude/settings.json`／`.claude/hooks/remind-decision-log.sh`／`dev-docs/workflow.md`／`dev-docs/ui-ux-guidelines.md`／`.mcp.json`）、正典（`dev-docs/foundation-plan.md`／`dev-docs/decisions/`／`dev-docs/requirements-analysis.md`）を読んだ。
+    - 指示により、レビュー中の「decision 0001」は本リポジトリの **decision 0016**（技術スタック）に読み替えた（レビュー自身も冒頭でこの読み替えを宣言済み）。
+    - 指摘 重大3件・中10件・軽9件を1件ずつ判断した。**重大3件・中10件・軽7件（計20件）を反映、軽2件（軽-8・軽-9）を見送り**。見送りはいずれもレビュー自身が「規約違反ではない／H-05違反ではない」と結論している項目。
+    - 「## 上流エスカレーション」節（`foundation-plan.md` §5 の C-01 固定文言4件目の集約先欠落）は、指示どおりこの場では反映せず要確認としてユーザーに提示した。
+    - いずれの反映も、正典（decision・foundation-plan・requirements-analysis）に既に書かれている内容の転記・整合修正であり、**新規の技術判断を伴わなかったため `/log-decision` は使用していない**。
+    - **（同セッション継続）** ユーザーから上流エスカレーションの詳細説明・選択肢提示の依頼を受け、問題の詳細（C-01の4文言中3つは`layout.html`に集約されるが、削除済みコメント本文だけは集約先が無くAskamaの型検査でも守られない）を説明し、4つの選択肢（新規項目追加／既存#9の説明拡張／テスト保護のみ／対応しない）を `AskUserQuestion` で提示した。ユーザーは「新規項目を追加（推奨）」を選択。
+    - `foundation-plan.md` §5 に新規 #10（`domain/` の定数、例 `model.rs` の `DELETED_COMMENT_TEXT`）を追加し、旧#10〜#14を#11〜#15に繰り下げ、「着手順の意図」の範囲表記を更新した。末尾に「変更履歴」節を新設し、今回の反映内容を記録した。
+    - この構造上の選択は「AIが選択肢を提示しユーザーが採否を判断した」論点にあたるため、`/log-decision` で **decision 0017**（削除済みコメント固定文言（C-01）の集約先。importance: minor、decided_by: ai+user）を新規作成し、`decisions/README.md` の一覧と decided_by=ai 索引の説明文（範囲を0001〜0017に更新）を反映した。
+- 決めたこと:
+    - `dev-docs/ui-ux-guidelines.md`: §6ページネーション記述の自己矛盾を解消（「無効化のみで許容」を削除しC-12「表示しない」に一本化。重大-1）。§8「固定文言（C-01）」を新設し4文言を列挙（重大-2）。§1操作不可行にC-06「削除済みコメントも件数に数える」を明記（中-1）。§3にRustの`str::len()`（バイト数）とJSの`String.length`（UTF-16コードユニット）の落とし穴を追記（中-4）。§7に「総件数・ページ位置を固定的に仮定しない」を追記（軽-7）。
+    - `.claude/hooks/remind-decision-log.sh`: transcript全体を`/log-decision`・「記録不要」でgrepする方式（systemMessage自身やCLAUDE.mdの記述と自己一致し恒常的に沈黙する欠陥があった）を廃止し、`dev-docs/decisions/`への実際の変更有無で判定する成果物ベースの抑止条件に置き換えた（重大-3）。4パターン（stop_hook_active時／変更なし／app/src変更のみ／app/src＋decisions変更）をパイプテストで確認。
+    - `CLAUDE.md`: Cookie属性（`Path=/`・`Secure`不使用・無期限）を確定スタック表に追記（中-2）。Playwright MCPはH-12の代替でなく開発中の目視確認用である旨を明記（中-3）。Askamaバージョンリスクと`context7`活用を追記（中-5）。「1リクエスト＝1トランザクション」（decision 0002、critical）を実装方針に追加（中-6）。DoDに「ビルド設定変更時のクリーンビルド確認」（中-7）・「C-01字句一致確認」（重大-2由来）・「cargo fmt適用」（軽-5）を追加。CSRF対策とH-07（秘匿キー不要の前提）の関係を注記（中-10）。P-08の「報告する」を「報告し、承認を得る」に修正（軽-1）。`Cargo.lock`/`rust-toolchain.toml`の再現性要件を追記（軽-4）。human-guide除外がRead/Edit/Writeのみを機械的に塞ぐ旨の注記を追加（中-9関連）。
+    - `.claude/settings.json`: `permissions.deny`に`Edit(./human-guide/**)`・`Write(./human-guide/**)`を追加（中-9）。`Bash(sqlx migrate*)`をallowから削除（マイグレーションは`sqlx::migrate!`で自動適用されるため手動経路は原則存在せず、誤ったシグナルになる。軽-3）。
+    - `.claude/skills/log-decision/SKILL.md`: `decided_by=ai`の場合にコード側へ番号コメントを残す手順を追加（中-8）。索引更新時にdecided_by=ai節の説明文（「すべてがai+user」等）も書き換える指示を追加（軽-6）。
+    - `.claude/skills/log-session/SKILL.md`: 手順4の箇条書きに「フェーズ」項目を追加し、5項目の列挙と一致させた（軽-2）。
+    - 見送り: **軽-8**（`settings.local.json`の`git commit`無確認許可。レビュー自身が「規約違反ではない・ローカル設定なのでチーム共有の問題は無い」と結論しており、対象ファイルも今回のレビュー範囲外の個人設定のため変更なし）。**軽-9**（フックの`jq`依存。レビュー自身が「H-05違反ではない・動作は壊れない」と結論しており対応不要）。
+- 次にやること:
+    - foundation-plan.md §5 の実装前基盤（新#1〜#5: ツールチェーン固定/compose/Dockerfile/マイグレーション/`.sqlx`オフラインキャッシュ）に着手する（前セッション#08から継続）。#10（`domain/`の`DELETED_COMMENT_TEXT`定数）は#12（`domain/`の骨格）と合わせて実装する。
+- 未解決事項:
+    - D02, D05, D06, D10, D14, D18, D19, D20 は引き続き未決定（変化なし）。
+    - Bバンド予測の未検証、`.sqlx/`更新忘れリスクは前セッションから持ち越し、変化なし。
+    - **上流エスカレーションは本セッション内で解決済み**（decision 0017、`foundation-plan.md`§5更新）。持ち越し事項ではない。

@@ -1,0 +1,29 @@
+# セッションログ: 2026-07-19 #08 フェーズ2 開発基盤（残り）の構築
+
+- フェーズ: 2
+- 今回やったこと:
+    - `dev-docs/foundation-plan.md`、`dev-docs/requirements-analysis.md`、`dev-docs/decisions/`（0001・0016）、`dev-docs/harness-invariants.md`、直近のセッションログ（#06・#07）、`dev-docs/decisions/README.md`、`dev-docs/decisions/TEMPLATE.md`、`dev-docs/session-log-format.md` を読み、現状を把握した。指示どおり `dev-docs/reviews/` の原文は読んでいない。
+    - `.claude/skills/log-decision/SKILL.md` を作成。引数（slug・importance・decided_by・タイトル）を受け取り、連番採番・`TEMPLATE.md` frontmatter付与・`decisions/README.md` の索引（一覧／`decided_by=ai`／`importance=critical`）更新までを一貫して行うスキル。
+    - `.claude/skills/log-session/SKILL.md` を作成。形式は `dev-docs/session-log-format.md` を都度参照する設計にし、複製していない。decision記録とは別系統である旨を明記した。
+    - `CLAUDE.md` をリポジトリ直下に作成。プロジェクト概要／確定スタック（decision 0016 転記）／主要コマンド／開発ルール／TDD／実装方針（Action/Calculation/Data分離）／意図の置き場所／Definition of Done／決定記録・セッションログ記録ルール／UI-UX必須要件／セキュリティ必須要件／非収束時エスカレーション（3回ルール）／やってはいけないこと（`docs/`・README編集禁止と例外、`human-guide/`除外）／dev-docs参照ガイドを含む。
+    - `dev-docs/workflow.md` を作成。main保護・短命ブランチ・1論理変更1コミット・コミットはユーザー承認後・Conventional Commits（ヘッダ=What／本文=Why、大きなWhyはdecision参照）を規定。
+    - `dev-docs/ui-ux-guidelines.md` を作成。状態網羅・送信中/成功/失敗フィードバック・二重バリデーション・a11y・レスポンシブ・`agent-browser`操作可能性（隠し要素禁止、`window.confirm`回避等）を規定。
+    - `.mcp.json`（新規）に `context7` と `playwright`（`@playwright/mcp`、UI検証用ブラウザ操作）のサーバ定義を作成。
+    - `.claude/settings.json` を新規作成（`.claude/settings.local.json` は既存だったが `settings.json` 自体は存在しなかったため、拡張ではなく新規作成になった。この差分はユーザーに報告済み）。安全な定型コマンドの `permissions.allow`（git読み取り系・cargo各種・sqlx・docker compose・lake build）、`permissions.deny`（`Read(./human-guide/**)`）、`enabledMcpjsonServers`、Stopフックを設定。
+    - `.claude/hooks/remind-decision-log.sh` を作成。`stop_hook_active` を見て多重発火を避け、`app/src` に未コミット変更がある場合のみ、transcriptに `/log-decision` や「記録不要」の言及が無ければソフトリマインダを出す設計。3パターン（`stop_hook_active=true`／変更なし／変更ありでリマインダ表示）をパイプテストで確認した。
+    - 各成果物の作成後にユーザーへ報告し、逐次承認を得てから次へ進んだ。
+- 決めたこと:
+    - セッション冒頭の指示どおり、以降「0001」への言及は decision 0016（技術スタック決定。番号が0001から0016に変わった経緯は decision 0016 §6.3 参照）と読み替えて作業した。
+    - `.claude/settings.json` はご指示の想定（既存拡張）と異なり実在しなかったため、新規作成とした。上書きは発生していない。
+    - MCPサーバーはサーバ定義を `.mcp.json` に分離し、`settings.json` 側は `enabledMcpjsonServers` による有効化のみとする構成にした（ブラウザ操作系は Microsoft公式 `@playwright/mcp` を採用。他プロジェクトに参考設定が無かったための自己判断であり、異論があれば差し替え可能）。
+    - Stopフックは恒久ブロックにせず、`app/src` の未コミット変更の有無とtranscript内の記録済みシグナルをヒューリスティックに見るソフトリマインダとして実装した。
+    - フェーズ0・1で手書きされたセッションログ（#01〜#07）は既に `dev-docs/session-log-format.md` の5項目形式に沿っていることを確認し、形式の揃え直しは行わなかった。
+- 次にやること:
+    - `dev-docs/foundation-plan.md` §5 の #1〜#5（`rust-toolchain.toml`/`Cargo.toml`固定、`compose.yaml`、`Dockerfile`、`migrations/0001_init.sql`＋`sqlx::migrate!`、`.sqlx/`オフラインキャッシュ）に着手し、`docker compose up` で起動できる骨格を作る。
+    - その際、decision 0016 §5.2 のBバンド（(a)〜(d)の所要時間）を実測し、予測との乖離を decision 0016 の変更履歴に追記する。
+    - decision 0011（`LIKE`の大文字小文字）と decision 0003（ユニークIDの扱い）をPostgreSQL上で1回まとめて実測確認する。
+    - `SETUP.md` を作成し、`README.md` にリンク1行のみを追記する（[decision 0001](../decisions/0001-readme-editing-policy.md) / P-08の範囲内。事前承認不要だが実施後に報告する）。
+- 未解決事項:
+    - **D02**（スキーマ詳細）、**D05**（CSRF対策の要否）、**D06**（POST-Redirect-GETの採否）、**D10**（P06のパス不整合）、**D14**（空DBへ戻す手段。方針のみ決定、`SETUP.md`未作成）、**D18**（削除確認ダイアログ）、**D19**（スクロール連携の方式）、**D20**（ログイン後の復帰先）— いずれもフェーズ2の残りで decision 起票。本セッションでの状況変化はない。
+    - **Askamaのバージョンリスク**・**`.sqlx/`更新忘れリスク**・**Bバンド予測の未検証** — 前セッション（#07）から持ち越し、変化なし。
+    - **Stopフックのdecisionリマインダの精度** — transcriptの文字列マッチ（`/log-decision` または「記録不要」）によるヒューリスティックであり、完全な検知ではない。誤検知・見逃しが多い場合は運用しながら調整が必要。
