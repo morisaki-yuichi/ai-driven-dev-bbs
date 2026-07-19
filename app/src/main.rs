@@ -1,7 +1,8 @@
+mod db;
 mod domain;
 mod web;
 
-use axum::{Router, routing::get};
+use axum::{Router, middleware::from_fn_with_state, routing::get};
 use sqlx::PgPool;
 
 use crate::domain::model::Error as DomainError;
@@ -20,9 +21,15 @@ async fn main() {
         .await
         .expect("failed to run migrations");
 
+    // "/" はP03(スレッド一覧画面)。AC09-1によりログイン必須。
     let app = Router::new()
         .route("/", get(|| async { "ok" }))
-        .fallback(fallback);
+        .route_layer(from_fn_with_state(
+            pool.clone(),
+            web::middleware::require_auth,
+        ))
+        .fallback(fallback)
+        .with_state(pool);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
         .await
         .expect("failed to bind listener");
