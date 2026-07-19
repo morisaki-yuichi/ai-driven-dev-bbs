@@ -70,6 +70,20 @@ impl HasCsrfToken for LoginForm {
     }
 }
 
+/// POST /logout のフォーム(F03)。ボタン以外に入力欄は無いが、decision 0021の
+/// 決定1(「例外なしの全POST」)によりCSRFトークンは必須で持つ
+/// (`templates/layout.html`のログアウトフォームのhidden input)。
+#[derive(Debug, Deserialize)]
+pub struct LogoutForm {
+    pub csrf_token: String,
+}
+
+impl HasCsrfToken for LogoutForm {
+    fn csrf_token(&self) -> &str {
+        &self.csrf_token
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListParams {
     /// 空文字列は「全件表示」(decision 0011: containsSubstr s "" = true)。

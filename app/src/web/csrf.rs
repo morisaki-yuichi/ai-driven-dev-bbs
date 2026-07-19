@@ -84,10 +84,10 @@ pub async fn csrf_token_middleware(jar: CookieJar, mut req: Request, next: Next)
     response
 }
 
-/// decision 0021 決定5: ログイン成功時(今後: ログアウト時)にCSRFトークンを
+/// decision 0021 決定5: ログイン成功時・ログアウト時にCSRFトークンを
 /// 発行し直す(セッション固定攻撃と同種のリスクを避ける衛生措置)。
 /// Cookieの値を新しいものへ上書きするSet-Cookieを応答へ追加する。
-/// F01では未実装のまま持ち越されていた(F02のスコープで実装)。
+/// F01では未実装のまま持ち越されていた(F02で実装、F03のログアウトからも呼ぶ)。
 pub fn rotate_csrf_cookie(response: &mut Response) {
     let token = Uuid::new_v4().to_string();
     let cookie = build_csrf_cookie(token);

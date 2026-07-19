@@ -2,6 +2,7 @@ pub mod cookies;
 pub mod csrf;
 pub mod error;
 pub mod login;
+pub mod logout;
 pub mod middleware;
 pub mod params;
 pub mod register;
@@ -10,7 +11,7 @@ pub mod views;
 use axum::{
     Router,
     middleware::{from_fn, from_fn_with_state},
-    routing::get,
+    routing::{get, post},
 };
 use sqlx::PgPool;
 use tower_http::services::ServeDir;
@@ -29,6 +30,9 @@ pub fn build_router(pool: PgPool) -> Router {
     Router::new()
         // "/" はP03(スレッド一覧画面)。AC09-1によりログイン必須。
         .route("/", get(|| async { "ok" }))
+        // F03: formal/Bbs/Op.leanの`logout`が`requireAuth`を先に呼ぶ定義に
+        // 合わせ、"/logout"もここ(require_authより前に登録されたルート)に置く。
+        .route("/logout", post(logout::submit))
         .route_layer(from_fn_with_state(pool.clone(), middleware::require_auth))
         // P01(ログイン)・P02(登録)は未ログインで到達できる(F01/F02)。
         .route("/register", get(register::show).post(register::submit))
