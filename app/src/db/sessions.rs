@@ -1,8 +1,8 @@
 //! セッションのDB永続化(decision 0007: 多重セッション許可・DB永続化・有効期限なし)。
 //!
-//! `create`/`delete`の呼び出し元(F02ログイン・F03ログアウトのハンドラ)は
-//! foundation-plan.md §5の範囲外(機能実装フェーズ)のため、それまでの間
-//! `dead_code` を抑止する。`find_user`はweb/middleware.rsの認証ガードが使う。
+//! `create`はF02ログイン(web/login.rs)が使う。`delete`の呼び出し元(F03ログアウトの
+//! ハンドラ)はまだ実装されていないため、それまでの間`dead_code`を抑止する。
+//! `find_user`はweb/middleware.rsの認証ガードが使う。
 
 #![allow(dead_code)]
 

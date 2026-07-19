@@ -84,6 +84,18 @@ pub async fn csrf_token_middleware(jar: CookieJar, mut req: Request, next: Next)
     response
 }
 
+/// decision 0021 決定5: ログイン成功時(今後: ログアウト時)にCSRFトークンを
+/// 発行し直す(セッション固定攻撃と同種のリスクを避ける衛生措置)。
+/// Cookieの値を新しいものへ上書きするSet-Cookieを応答へ追加する。
+/// F01では未実装のまま持ち越されていた(F02のスコープで実装)。
+pub fn rotate_csrf_cookie(response: &mut Response) {
+    let token = Uuid::new_v4().to_string();
+    let cookie = build_csrf_cookie(token);
+    if let Ok(value) = HeaderValue::from_str(&cookie.to_string()) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+}
+
 /// ルータ全体に適用するミドルウェア。状態変更メソッドについて、`Origin`
 /// (無ければ`Referer`)のオリジンがリクエストの`Host`と一致することを要求する。
 ///

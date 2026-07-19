@@ -4,6 +4,34 @@
 
 {% block content %}
 <h1>ログイン</h1>
-<p>ログイン機能は準備中です(F02で実装予定)。</p>
+
+{# 共通メッセージエリア(common_layout.md §3 / ui-ux-guidelines §2・§4)。
+   register.htmlと同じ理由で、中身が空でも要素自体は常に置く。 #}
+<div class="message-area" role="alert" aria-live="assertive">
+    {% if let Some(msg) = form_message %}
+    <p class="message message-error" id="form-error">{{ msg }}</p>
+    {% endif %}
+</div>
+
+{# novalidate: register.htmlと同じ理由(decision 0023 / ui-ux-guidelines §6)。 #}
+<form method="post" action="/login" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    {# 認証失敗はどちらの欄が誤りかを明かせない(AC02-3)ため、項目ごとのエラーは出せない。
+       代わりに共通メッセージ(#form-error)を**両方の欄**の説明として関連付ける。
+       aria-describedbyが無いと、スクリーンリーダーで欄にフォーカスした利用者には
+       入力が拒否された理由が届かない(ui-ux-guidelines §4)。 #}
+    <div class="field">
+        <label for="unique_id">ユニークID</label>
+        <input type="text" id="unique_id" name="unique_id" value="{{ unique_id }}" autocomplete="username" required{% if form_message.is_some() %} aria-invalid="true" aria-describedby="form-error"{% endif %}>
+    </div>
+
+    <div class="field">
+        <label for="password">パスワード</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required{% if form_message.is_some() %} aria-invalid="true" aria-describedby="form-error"{% endif %}>
+    </div>
+
+    <button type="submit">ログイン</button>
+</form>
 <a href="/register">新規登録はこちら</a>
 {% endblock %}

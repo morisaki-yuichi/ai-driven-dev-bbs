@@ -1,10 +1,17 @@
 /-
-  Bbs.Invariant — 証明すべき性質の**言明のみ**
+  Bbs.Invariant — 証明すべき性質の言明と、実装済み機能ぶんの証明
 
-  本フェーズでは証明を完遂しない。すべて `sorry` を置いてあり、
-  `lake build` は警告（declaration uses 'sorry'）を出すが成功する。
-  ここに並ぶのは「原典の AC が状態機械の性質として何を意味するか」の翻訳であり、
-  証明を試みる過程でさらに未規定点が出ることを想定している。
+  ここに並ぶのは「原典の AC が状態機械の性質として何を意味するか」の翻訳。
+  当初は全件を `sorry` で置いた言明集だったが、以降は**機能の実装に合わせて
+  対応する定理を証明していく**方針に移した。現在は F01（ユーザー登録）・
+  F02（ログイン）が触れる範囲 ―― 作用モナドの原子性補題（`bind_*` / `pure_*` /
+  `fail_*` / `ensure_*` / `guardNone_*` など）、`register_atomic`、`login_atomic`、
+  および認証ガード（`requireAuth_fails_without_session` ほか）―― が証明済み。
+
+  未実装機能（スレッド・コメント・検索・一覧のページングとソート）に対応する定理は
+  まだ `sorry` のままで、`lake build` はそのぶんの警告（declaration uses 'sorry'）を
+  出すが成功する。証明を試みる過程でさらに未規定点が出ることを想定しており、
+  残りは各機能の実装時に順次埋める。
 -/
 import Bbs.Op
 import Bbs.Query
@@ -168,6 +175,27 @@ theorem register_atomic (u p d : String) :
   injection h with h1 _
   injection h1
 
+/-- F02 ログインの原子性（decision 0002。F02のスコープ）。`login` は
+    「ID不存在 → invalidCredentials」「パスワード不一致 → invalidCredentials」の
+    いずれで失敗しても、実際に `Db` を書き換える `set`（セッション追加）には
+    到達しない。AC02-3（誤ったID/パスワードでログイン失敗）で
+    セッションが作られてしまわないことを保証する。 -/
+theorem login_atomic (u p : String) :
+    NoWriteOnError (login u p) := by
+  unfold login
+  apply bind_noWriteOnError get_noWriteOnSuccess
+  intro s
+  cases h : s.users.find? (·.uniqueId = u) with
+  | none =>
+    exact fail_noWriteOnError _
+  | some usr =>
+    apply bind_noWriteOnError (ensure_noWriteOnSuccess _ _)
+    intro _
+    intro s0 e s' hh
+    simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.set, Action.pure] at hh
+    injection hh with h1 _
+    injection h1
+
 theorem createThread_atomic (sid : SessionId) (t b : String) :
     NoWriteOnError (createThread sid t b) := by sorry
 
@@ -185,17 +213,55 @@ theorem deleteThread_atomic (sid : SessionId) (tid : ThreadId) :
 def NoSession (db : Db) (sid : SessionId) : Prop :=
   db.sessions.find? (·.id = sid) = none
 
+/-- AC02-1 の核心（F02のスコープ）: 有効なセッションが無ければ `requireAuth` は
+    必ず `notAuthenticated` で失敗し、状態も変えない。C-09 のガードそのものの
+    正しさを保証し、これを土台に `createThread_requires_auth` 等を導く。 -/
+theorem requireAuth_fails_without_session (db : Db) (sid : SessionId)
+    (h : NoSession db sid) :
+    (requireAuth sid) db = (.error .notAuthenticated, db) := by
+  unfold NoSession at h
+  unfold requireAuth
+  -- register_atomic/login_atomicの末尾と同じ組(`bind`/`pure`/`Bind.bind`/`Pure.pure`/
+  -- `Action.*`)を挙げないと、do記法の`Bind.bind`がAction.bindへ展開しきらない
+  -- (`Action.bind`だけを挙げた版は構文不一致で`simp made no progress`になった)。
+  simp only [bind, Bind.bind, Action.bind, Action.get, Action.fail, h]
+
+/-- `Query.guarded`（`viewThreadList`/`viewSearch`/`viewThreadDetail`が使う認証ガード）
+    も同じ性質を持つ。`Op.requireAuth`とは別実装だが、モデル上「有効なセッションが
+    無ければ`notAuthenticated`で状態を変えず失敗する」という同じ契約を果たす。 -/
+theorem guarded_fails_without_session (db : Db) (sid : SessionId) (f : Db → α)
+    (h : NoSession db sid) :
+    (guarded sid f) db = (.error .notAuthenticated, db) := by
+  unfold guarded NoSession at *
+  simp only [h]
+
+/-- `x`が状態`s`上で失敗するなら、それに何を継いでも(`Action.bind x f`)同じ
+    エラー・同じ状態で失敗する(`Action.bind`の定義そのもの)。`exact`/`apply`は
+    defeqで単一化するため、do記法が`Bind.bind`経由で展開されていても
+    (`simp`と違い)ここを経由すれば素通りできる。 -/
+theorem bind_fails_with {x : Action α} {f : α → Action β} {e : Error} {s : Db}
+    (hx : x s = (.error e, s)) :
+    (Action.bind x f) s = (.error e, s) := by
+  simp only [Action.bind, hx]
+
 theorem createThread_requires_auth (db : Db) (sid : SessionId) (t b : String)
     (h : NoSession db sid) :
-    (createThread sid t b) db = (.error .notAuthenticated, db) := by sorry
+    (createThread sid t b) db = (.error .notAuthenticated, db) := by
+  have hr := requireAuth_fails_without_session db sid h
+  unfold createThread
+  exact bind_fails_with hr
 
 theorem viewThreadList_requires_auth (db : Db) (sid : SessionId) (k : SortKey) (p : Nat)
     (h : NoSession db sid) :
-    (viewThreadList sid k p) db = (.error .notAuthenticated, db) := by sorry
+    (viewThreadList sid k p) db = (.error .notAuthenticated, db) := by
+  unfold viewThreadList
+  exact guarded_fails_without_session db sid _ h
 
 theorem viewSearch_requires_auth (db : Db) (sid : SessionId)
     (kw : String) (h : NoSession db sid) :
-    (viewSearch sid kw) db = (.error .notAuthenticated, db) := by sorry
+    (viewSearch sid kw) db = (.error .notAuthenticated, db) := by
+  unfold viewSearch
+  exact guarded_fails_without_session db sid _ h
 
 /-! ### 4. 不変性 (C-05 / AC05-4, AC07-4)
 
