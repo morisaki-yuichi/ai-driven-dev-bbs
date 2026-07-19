@@ -1,5 +1,7 @@
 //! `q` / `sort` / `page` の共通パース。GET /?q=Rust&sort=created_desc&page=2 の形
 //! (decision 0011 §影響)。ページネーション遷移でソート・検索条件を維持する(C-13)。
+//! `SortKey`自体はdomain/query.rs(Bbs.Query.SortKeyの対応先)が持ち、ここではHTTPの
+//! クエリ文字列をその型へ変換するパースのみを担う。
 //!
 //! 呼び出し元(F09/F11/F12のスレッド一覧ハンドラ)はfoundation-plan.md §5の範囲外
 //! (機能実装フェーズ)のため、それまでの間 `dead_code` を抑止する。
@@ -8,36 +10,7 @@
 
 use std::collections::HashMap;
 
-/// formal/Bbs/Query.lean の `SortKey` に1対1対応する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortKey {
-    CreatedAsc,
-    CreatedDesc,
-    CommentCountDesc,
-    LastUpdatedDesc,
-}
-
-impl SortKey {
-    /// クエリ文字列上の表現。ページネーションリンクの再構築(C-13)に使う。
-    pub fn as_query_value(self) -> &'static str {
-        match self {
-            SortKey::CreatedAsc => "created_asc",
-            SortKey::CreatedDesc => "created_desc",
-            SortKey::CommentCountDesc => "comment_count_desc",
-            SortKey::LastUpdatedDesc => "last_updated_desc",
-        }
-    }
-
-    /// 不正・未指定な値は既定(作成日時降順、decision 0009: 一覧の初期表示)に丸める。
-    fn parse(s: Option<&str>) -> Self {
-        match s {
-            Some("created_asc") => SortKey::CreatedAsc,
-            Some("comment_count_desc") => SortKey::CommentCountDesc,
-            Some("last_updated_desc") => SortKey::LastUpdatedDesc,
-            _ => SortKey::CreatedDesc,
-        }
-    }
-}
+use crate::domain::query::SortKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListParams {
