@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>{% block title %}AI掲示板（仮）{% endblock %}</title>
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+    <a href="/">AI掲示板（仮）</a>
+    {% if let Some(user) = current_user %}
+        <span>{{ user.display_name }} さん</span>
+        <a href="/profile/edit">プロフィール</a>
+        <form method="post" action="/logout"><button type="submit">ログアウト</button></form>
+    {% else %}
+        <a href="/login">ログイン</a>
+        <a href="/register">新規登録</a>
+    {% endif %}
+</header>
+<main>
+    {% block content %}{% endblock %}
+</main>
+<footer>
+    <p>© 2026 AI駆動開発教材プロジェクト</p>
+</footer>
+</body>
+</html>
