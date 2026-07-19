@@ -6,6 +6,7 @@ pub mod logout;
 pub mod middleware;
 pub mod params;
 pub mod register;
+pub mod thread_list;
 pub mod views;
 
 use axum::{
@@ -29,7 +30,7 @@ pub fn build_router(pool: PgPool) -> Router {
 
     Router::new()
         // "/" はP03(スレッド一覧画面)。AC09-1によりログイン必須。
-        .route("/", get(|| async { "ok" }))
+        .route("/", get(thread_list::show))
         // F03: formal/Bbs/Op.leanの`logout`が`requireAuth`を先に呼ぶ定義に
         // 合わせ、"/logout"もここ(require_authより前に登録されたルート)に置く。
         .route("/logout", post(logout::submit))

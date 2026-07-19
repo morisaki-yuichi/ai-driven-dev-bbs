@@ -1,0 +1,12 @@
+{% extends "layout.html" %}
+
+{% block title %}スレッド一覧{% endblock %}
+
+{% block content %}
+{# F03のスコープではlayout.html経由の最小スタブに留める。検索・ソート・
+   ページネーションを含む一覧本体の実装はF09の範囲(dev-docs/foundation-plan.md)。
+   ここで最低限保証したいのは、ログイン後にlayout.htmlのヘッダー(表示名・
+   プロフィール導線・ログアウトボタン)がagent-browserから見える形で描画される
+   ことそのもの(シナリオ01のログイン→ログアウトの通し実行に必要)。 #}
+<h1>スレッド一覧</h1>
+{% endblock %}
