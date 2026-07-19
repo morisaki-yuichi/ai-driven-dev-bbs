@@ -20,19 +20,24 @@
 <form method="post" action="/register" novalidate>
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
+    {# 項目エラーは aria-describedby で対応する入力欄に関連付ける。視覚的な近接だけでは
+       スクリーンリーダー利用者に「どの欄の話か」が伝わらない(ui-ux-guidelines §4)。
+       aria-invalid は「この欄が拒否された」ことを、色や位置に依存せず伝える。 #}
     <div class="field">
         <label for="unique_id">ユニークID</label>
-        <input type="text" id="unique_id" name="unique_id" value="{{ unique_id }}" autocomplete="username" required>
+        <input type="text" id="unique_id" name="unique_id" value="{{ unique_id }}" autocomplete="username" required{% if unique_id_error.is_some() %} aria-invalid="true" aria-describedby="unique_id_error"{% endif %}>
         {% if let Some(msg) = unique_id_error %}
-        <p class="field-error">{{ msg }}</p>
+        <p class="field-error" id="unique_id_error">{{ msg }}</p>
         {% endif %}
     </div>
 
     <div class="field">
         <label for="password">パスワード</label>
-        <input type="password" id="password" name="password" autocomplete="new-password" required minlength="12">
-        <p class="field-hint">12文字以上・英字/数字/記号をすべて含めてください。</p>
-        <ul class="field-error">
+        {# ヒントはエラーの有無にかかわらず常に説明として関連付ける。エラー時は
+           エラー一覧を先に読ませたいので、describedby の順序をエラー→ヒントにする。 #}
+        <input type="password" id="password" name="password" autocomplete="new-password" required minlength="12"{% if password_errors.is_empty() %} aria-describedby="password_hint"{% else %} aria-invalid="true" aria-describedby="password_errors password_hint"{% endif %}>
+        <p class="field-hint" id="password_hint">12文字以上・英字/数字/記号をすべて含めてください。</p>
+        <ul class="field-error" id="password_errors">
             {% for msg in password_errors %}
             <li>{{ msg }}</li>
             {% endfor %}
@@ -54,9 +59,9 @@
            サーバ側の判定(唯一の正典)を緩めることはないため。
            揃えるにはコードポイント単位で数える JS が要り、それは
            decision 0008(SSR/MPA)の前提を越える新たな設計判断になる。 #}
-        <input type="text" id="display_name" name="display_name" value="{{ display_name }}" required maxlength="15">
+        <input type="text" id="display_name" name="display_name" value="{{ display_name }}" required maxlength="15"{% if display_name_error.is_some() %} aria-invalid="true" aria-describedby="display_name_error"{% endif %}>
         {% if let Some(msg) = display_name_error %}
-        <p class="field-error">{{ msg }}</p>
+        <p class="field-error" id="display_name_error">{{ msg }}</p>
         {% endif %}
     </div>
 

@@ -322,23 +322,5 @@ async fn post_register_with_cross_origin_request_is_rejected_with_403(pool: PgPo
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
-#[sqlx::test]
-async fn get_login_page_renders_after_registration_redirect(pool: PgPool) {
-    let app = bbs::web::build_router(pool.clone());
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/login")
-                .header(header::HOST, HOST)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let html = String::from_utf8(body.to_vec()).unwrap();
-    assert!(html.contains("ログイン"));
-}
+// GET /login自体の描画(CSRF hidden input・フォーム構造)はF02のスコープ。
+// tests/login_test.rsの `get_login_page_renders_form_with_csrf_hidden_input` を参照。
