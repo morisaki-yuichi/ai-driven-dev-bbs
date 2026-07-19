@@ -4,11 +4,12 @@
 //! `formal/Bbs/Invariant.lean` の `login_atomic` がこの操作の原子性
 //! ―― 認証に失敗した経路ではセッションを書き込まないこと ―― を証明している)。
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use askama::Template;
 use axum::{
-    extract::{Extension, State},
+    extract::{Extension, Query, State},
     http::{HeaderValue, header},
     response::{Html, IntoResponse, Redirect, Response},
 };
@@ -31,31 +32,65 @@ struct LoginTemplate {
     /// AC02-3: ID不存在・パスワード誤りのどちらでも同じ文言(ui-ux-guidelines §2の例
     /// そのもの「IDまたはパスワードが正しくありません」)。
     form_message: Option<String>,
+    /// decision 0024: `POST /register`成功後のリダイレクト(`/login?registered=1`)を
+    /// 受けて出す正常系通知(ui-ux-guidelines §2「成功時は共通メッセージエリアに
+    /// 正常系通知を出す」)。H-12でagent-browserが「登録が成功した」ことを
+    /// 自然言語から観測できるようにするための表示。
+    success_message: Option<String>,
     unique_id: String,
+}
+
+/// 共通メッセージエリアに出す通知の種別。
+///
+/// Why: 以前は`Option<DomainError>`(失敗)と`bool`(成功)の2引数で呼び出し側が
+/// 指定していたが、隣り合う異なる意味の引数は取り違えやすい(コンパイラは
+/// `render_form(csrf, id, None, true)`と`render_form(csrf, id, Some(e), false)`の
+/// どちらも同じ型として受理してしまう)。「成功通知と失敗通知は同時に出ない」
+/// という不変条件を、呼び出し側のコメントではなく列挙型のバリアントとして表現し、
+/// 両方を同時に持つ状態(`Some(_)`かつ`true`)がそもそも構築できないようにする。
+enum FormNotice {
+    /// 通知なし(POST /login失敗後の再表示以外の、初期表示で`registered`も無い場合)。
+    None,
+    /// AC02-3の認証失敗通知。
+    Error(DomainError),
+    /// decision 0024: `GET /login?registered=1`由来の登録成功通知。
+    Registered,
 }
 
 /// ログイン画面(初期表示・失敗後の再表示)を描画する。失敗時も入力済みの
 /// ユニークIDは消さない(ui-ux-guidelines §2)。パスワードは再表示しない
 /// (decision 0022と同じ方針: 機微情報をレスポンスへ不要に載せない)。
-fn render_form(csrf_token: String, unique_id: &str, error: Option<DomainError>) -> Response {
-    let form_message = match error {
-        None => None,
-        Some(DomainError::InvalidCredentials) => {
-            Some("IDまたはパスワードが正しくありません".to_string())
-        }
+///
+/// `FormNotice::Registered`はGET /login?registered=1(decision 0024)からのみ渡される。
+/// POST /loginの失敗再表示(`submit`内の呼び出し)は常に`FormNotice::Error(..)`を渡す。
+fn render_form(csrf_token: String, unique_id: &str, notice: FormNotice) -> Response {
+    let (success_message, form_message) = match notice {
+        FormNotice::None => (None, None),
+        FormNotice::Registered => (
+            Some("登録が完了しました。ログインしてください。".to_string()),
+            None,
+        ),
+        FormNotice::Error(DomainError::InvalidCredentials) => (
+            None,
+            Some("IDまたはパスワードが正しくありません".to_string()),
+        ),
         // login()が返しうるエラーはInvalidCredentialsのみ(formal/Bbs/Op.lean参照)なので
         // この腕には到達しない想定。それでもNoneに落とさないのは、落とすと
         // 「エラーを渡したのに画面には何も出ていない200応答」になり、
         // ui-ux-guidelines §2 の失敗フィードバック要件を静かに破るため。
         // 種別を特定できない失敗でも、失敗したこと自体は必ず伝える(register.rsが
         // error_present.then(...)で要約を必ず出すのと同じ非対称を作らない)。
-        Some(_) => Some("ログインできませんでした。入力内容を確認してください。".to_string()),
+        FormNotice::Error(_) => (
+            None,
+            Some("ログインできませんでした。入力内容を確認してください。".to_string()),
+        ),
     };
 
     let tmpl = LoginTemplate {
         current_user: None,
         csrf_token,
         form_message,
+        success_message,
         unique_id: unique_id.to_string(),
     };
     let mut response = match tmpl.render() {
@@ -90,8 +125,18 @@ pub fn dummy_password_hash() -> &'static str {
 }
 
 /// GET /login。
-pub async fn show(Extension(CsrfToken(csrf_token)): Extension<CsrfToken>) -> Response {
-    render_form(csrf_token, "", None)
+/// decision 0024: `?registered=1`(値の中身は問わずキーの有無のみ見る)は
+/// `POST /register`成功直後のリダイレクト由来で、登録完了の成功表示を出す。
+pub async fn show(
+    Extension(CsrfToken(csrf_token)): Extension<CsrfToken>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let notice = if query.contains_key("registered") {
+        FormNotice::Registered
+    } else {
+        FormNotice::None
+    };
+    render_form(csrf_token, "", notice)
 }
 
 /// POST /login。AC02-1〜AC02-3。
@@ -140,7 +185,7 @@ pub async fn submit(
         return Ok(render_form(
             csrf_token,
             &form.unique_id,
-            Some(DomainError::InvalidCredentials),
+            FormNotice::Error(DomainError::InvalidCredentials),
         ));
     };
 
@@ -148,7 +193,7 @@ pub async fn submit(
         return Ok(render_form(
             csrf_token,
             &form.unique_id,
-            Some(DomainError::InvalidCredentials),
+            FormNotice::Error(DomainError::InvalidCredentials),
         ));
     }
 

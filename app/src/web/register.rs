@@ -173,7 +173,9 @@ pub async fn submit(
                 false => AppError::from(e),
             })?;
         // C-18: 登録はセッションを作らない。AC01-5: ログイン画面へリダイレクトする。
-        Ok((Redirect::to("/login").into_response(), tx))
+        // decision 0024: `registered=1` はログイン画面側で登録完了の成功表示を
+        // 出すためのフラッシュ用クエリパラメータ(H-12の自然言語観測性)。
+        Ok((Redirect::to("/login?registered=1").into_response(), tx))
     })
     .await;
 

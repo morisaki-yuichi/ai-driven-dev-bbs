@@ -81,6 +81,32 @@ async fn get_login_page_renders_form_with_csrf_hidden_input(pool: PgPool) {
     assert!(html.contains(r#"aria-live="assertive""#));
     // AC02-1: 未ログインでもログイン画面自体は見える(初期表示ではエラーなし)。
     assert!(!html.contains("IDまたはパスワードが正しくありません"));
+    // decision 0024: パラメータが無ければ登録成功メッセージは出ない。
+    assert!(!html.contains("登録が完了しました"));
+}
+
+/// decision 0024: `POST /register`成功後のリダイレクト先(`/login?registered=1`)を
+/// GETした場合、共通メッセージエリアに登録完了の成功表示が出る(H-12の観測性)。
+#[sqlx::test]
+async fn get_login_page_with_registered_param_shows_success_message(pool: PgPool) {
+    let app = bbs::web::build_router(pool.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/login?registered=1")
+                .header(header::HOST, HOST)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html.contains("登録が完了しました"));
+    assert!(html.contains("message-success"));
 }
 
 /// AC02-1: 保護されたルート("/"、formal/Bbs/Invariant.leanの
