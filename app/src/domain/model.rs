@@ -47,3 +47,17 @@ pub enum Error {
     /// 削除済みコメントの再削除(AC08-4)
     AlreadyDeleted,
 }
+
+/// 削除済みコメントの本文に表示する固定文言(C-01、AC08-2/AC10-3)。
+/// テンプレート側はこの定数を参照するのみとし、リテラルを書き写さない(decision 0017)。
+pub const DELETED_COMMENT_TEXT: &str = "＜このコメントは削除されました＞";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleted_comment_text_matches_c01_exactly() {
+        assert_eq!(DELETED_COMMENT_TEXT, "＜このコメントは削除されました＞");
+    }
+}
