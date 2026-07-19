@@ -6,8 +6,19 @@
 <h1>ログイン</h1>
 
 {# 共通メッセージエリア(common_layout.md §3 / ui-ux-guidelines §2・§4)。
-   register.htmlと同じ理由で、中身が空でも要素自体は常に置く。 #}
-<div class="message-area" role="alert" aria-live="assertive">
+   register.htmlと同じ理由で、中身が空でも要素自体は常に置く。
+   decision 0024: 登録成功(?registered=1)由来の正常系通知と、ログイン失敗の
+   異常系通知は同時に出ない(login.rsの`FormNotice`が型で保証している。
+   showはNoneかRegistered、submitの失敗経路はErrorのみを渡す)ため、
+   同じ領域に両方の分岐を並べてよい。
+   aria-liveは通知の種別で切り替える: 成功は割り込み優先度の低いpolite、
+   失敗は従来どおりassertive。role="alert"は暗黙にassertiveとして扱われる
+   ため、成功時にこれを付けたままだとpoliteが効かない。よってrole="alert"は
+   失敗側の分岐にのみ付ける。 #}
+<div class="message-area"{% if success_message.is_some() %} aria-live="polite"{% else %} role="alert" aria-live="assertive"{% endif %}>
+    {% if let Some(msg) = success_message %}
+    <p class="message message-success">{{ msg }}</p>
+    {% endif %}
     {% if let Some(msg) = form_message %}
     <p class="message message-error" id="form-error">{{ msg }}</p>
     {% endif %}

@@ -133,7 +133,12 @@ async fn post_register_with_valid_data_redirects_to_login_and_persists_user(pool
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/login");
+    // decision 0024: 登録成功をH-12で自然言語観測可能にするため、ログイン画面での
+    // 成功表示をクエリパラメータで駆動する。
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        "/login?registered=1"
+    );
 
     // AC01-6: 永続化されている。
     let saved: (String,) = sqlx::query_as("select display_name from users where unique_id = $1")
