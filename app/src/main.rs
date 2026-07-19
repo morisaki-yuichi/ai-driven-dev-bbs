@@ -1,5 +1,6 @@
 use axum::{Router, middleware::from_fn_with_state, routing::get};
 use sqlx::PgPool;
+use tower_http::services::ServeDir;
 
 use bbs::domain::model::Error as DomainError;
 use bbs::web::error::AppError;
@@ -22,6 +23,10 @@ async fn main() {
     let app = Router::new()
         .route("/", get(|| async { "ok" }))
         .route_layer(from_fn_with_state(pool.clone(), middleware::require_auth))
+        // `layout.html`が参照する/static/app.cssの配信。相対パス"static"は
+        // ホストの`cargo run`(cwd=app/)・コンテナ(WORKDIR /app、Dockerfileが
+        // `COPY static ./static`)のどちらでも実行時cwdからの相対で解決する。
+        .nest_service("/static", ServeDir::new("static"))
         .fallback(fallback)
         .with_state(pool);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
