@@ -11,7 +11,14 @@
     {% if let Some(user) = current_user %}
         <span>{{ user.display_name }} さん</span>
         <a href="/profile/edit">プロフィール</a>
-        <form method="post" action="/logout"><button type="submit">ログアウト</button></form>
+        {# decision 0021 決定1: 例外なしの全POSTがCSRF二重送信トークン検証の対象。
+           hidden inputはagent-browserが操作する対象ではない(ui-ux-guidelines §6の
+           「隠し要素にアクションを強いない」はAIが押す・触るボタン/リンクの話で、
+           フォーム送信時にブラウザが自動同梱するhidden inputには当たらない)。 #}
+        <form method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+            <button type="submit">ログアウト</button>
+        </form>
     {% else %}
         <a href="/login">ログイン</a>
         <a href="/register">新規登録</a>

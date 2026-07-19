@@ -4,9 +4,13 @@
   ここに並ぶのは「原典の AC が状態機械の性質として何を意味するか」の翻訳。
   当初は全件を `sorry` で置いた言明集だったが、以降は**機能の実装に合わせて
   対応する定理を証明していく**方針に移した。現在は F01（ユーザー登録）・
-  F02（ログイン）が触れる範囲 ―― 作用モナドの原子性補題（`bind_*` / `pure_*` /
-  `fail_*` / `ensure_*` / `guardNone_*` など）、`register_atomic`、`login_atomic`、
-  および認証ガード（`requireAuth_fails_without_session` ほか）―― が証明済み。
+  F02（ログイン）・F03（ログアウト）が触れる範囲 ―― 作用モナドの原子性補題
+  （`bind_*` / `pure_*` / `fail_*` / `ensure_*` / `guardNone_*` など）、
+  `register_atomic`、`login_atomic`、`logout_atomic`、認証ガード
+  （`requireAuth_fails_without_session` / `requireAuth_succeeds_with_session` ほか）、
+  および `logout_requires_auth` / `logout_effect` / `logout_removes_only_target_session`
+  （ログアウトは対象セッションだけを消し、同一利用者の別セッションには影響しない。
+  decision 0007 の多重セッション許可と整合する）―― が証明済み。
 
   未実装機能（スレッド・コメント・検索・一覧のページングとソート）に対応する定理は
   まだ `sorry` のままで、`lake build` はそのぶんの警告（declaration uses 'sorry'）を
@@ -196,6 +200,36 @@ theorem login_atomic (u p : String) :
     injection hh with h1 _
     injection h1
 
+/-- `Action.modify`は失敗しない(`Except.ok`の一定値を返す)ので、
+    `NoWriteOnError`は空虚に真になる。`logout`(F03)の末尾がこの形をしている。 -/
+theorem modify_noWriteOnError (f : Db → Db) :
+    NoWriteOnError (α := Unit) (Action.modify f) := by
+  intro s e s' h
+  unfold Action.modify at h
+  injection h with h1 _
+  injection h1
+
+/-- `requireAuth`は成功時に状態を変えない(`get`のあとは`pure`/`fail`のみ)。
+    `logout_atomic`の証明で`requireAuth`を`bind`の左側として使うために要る。 -/
+theorem requireAuth_noWriteOnSuccess (sid : SessionId) :
+    NoWriteOnSuccess (requireAuth sid) := by
+  unfold requireAuth
+  apply bind_noWriteOnSuccess get_noWriteOnSuccess
+  intro s
+  cases s.sessions.find? (·.id = sid) with
+  | some sess => exact pure_noWriteOnSuccess _
+  | none => exact fail_noWriteOnSuccess _
+
+/-- F03 ログアウトの原子性(decision 0002)。`logout`が失敗しうる唯一の経路は
+    `requireAuth`(未認証)であり、それ自体が状態を変えない。認証を通った後の
+    `modify`(セッション除去)は失敗しないので、失敗時に部分書き込みが残る余地が
+    そもそも無い。 -/
+theorem logout_atomic (sid : SessionId) : NoWriteOnError (logout sid) := by
+  unfold logout
+  apply bind_noWriteOnError (requireAuth_noWriteOnSuccess sid)
+  intro _
+  exact modify_noWriteOnError _
+
 theorem createThread_atomic (sid : SessionId) (t b : String) :
     NoWriteOnError (createThread sid t b) := by sorry
 
@@ -251,6 +285,18 @@ theorem createThread_requires_auth (db : Db) (sid : SessionId) (t b : String)
   unfold createThread
   exact bind_fails_with hr
 
+/-- F03 ログアウト(AC03-1/AC03-3の前提): 有効なセッションが無ければ
+    `logout`自体が`notAuthenticated`で失敗し、状態も変えない。実装側では
+    `POST /logout`を`require_auth`配下に置くことでこれと同じ契約にする
+    (未ログインでのPOSTはログイン画面へリダイレクトし、`sessions`テーブルへは
+    一切触れない)。 -/
+theorem logout_requires_auth (db : Db) (sid : SessionId)
+    (h : NoSession db sid) :
+    (logout sid) db = (.error .notAuthenticated, db) := by
+  have hr := requireAuth_fails_without_session db sid h
+  unfold logout
+  exact bind_fails_with hr
+
 theorem viewThreadList_requires_auth (db : Db) (sid : SessionId) (k : SortKey) (p : Nat)
     (h : NoSession db sid) :
     (viewThreadList sid k p) db = (.error .notAuthenticated, db) := by
@@ -262,6 +308,44 @@ theorem viewSearch_requires_auth (db : Db) (sid : SessionId)
     (viewSearch sid kw) db = (.error .notAuthenticated, db) := by
   unfold viewSearch
   exact guarded_fails_without_session db sid _ h
+
+/-! ### 3.1 F03 ログアウトの効果 (AC03-1 / decision 0007)
+
+有効なセッションでの `logout` が「対象セッションだけを消し、他は残す」ことを示す。
+decision 0007（多重セッション許可）と組み合わせると、同じ利用者の**別セッション**は
+ログアウト後も有効なままであることが従う。 -/
+
+/-- `bind_fails_with`の成功版: `x`が状態`s`上で値`a`・状態`s'`へ成功するなら、
+    それに継いだ`Action.bind x f`は`f a s'`と同じ結果になる(`Action.bind`の定義)。 -/
+theorem bind_succeeds_with {x : Action α} {f : α → Action β} {a : α} {s s' : Db}
+    (hx : x s = (.ok a, s')) :
+    (Action.bind x f) s = f a s' := by
+  simp only [Action.bind, hx]
+
+/-- 有効なセッションがあれば`requireAuth`はそのユーザーIDで成功し、状態を変えない。
+    `requireAuth_fails_without_session`の成功版。 -/
+theorem requireAuth_succeeds_with_session (db : Db) (sid : SessionId) (uid : UserId)
+    (h : db.sessions.find? (·.id = sid) = some ⟨sid, uid⟩) :
+    (requireAuth sid) db = (.ok uid, db) := by
+  unfold requireAuth
+  simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.pure, h]
+
+/-- F03 ログアウトの効果本体。`logout_removes_only_target_session`はこれと
+    `requireAuth_succeeds_with_session`を合成して得る。 -/
+theorem logout_effect (db : Db) (sid : SessionId) (uid : UserId)
+    (h : (requireAuth sid) db = (.ok uid, db)) :
+    (logout sid) db = (.ok (), { db with sessions := db.sessions.filter (·.id ≠ sid) }) := by
+  unfold logout
+  exact bind_succeeds_with h
+
+/-- ログアウトは対象セッション`sid`だけを`sessions`から消し、他のセッション
+    (同一利用者の別セッションを含む)は変更しない。実装の `db::sessions::delete`
+    (`delete from sessions where id = $1`)が1行だけを対象にすることの対応物。 -/
+theorem logout_removes_only_target_session (db : Db) (sid : SessionId) (uid : UserId)
+    (h : db.sessions.find? (·.id = sid) = some ⟨sid, uid⟩) :
+    (logout sid db).2.sessions = db.sessions.filter (·.id ≠ sid) := by
+  have hr := requireAuth_succeeds_with_session db sid uid h
+  rw [logout_effect db sid uid hr]
 
 /-! ### 4. 不変性 (C-05 / AC05-4, AC07-4)
 

@@ -5,25 +5,28 @@
 //! (SQLSTATE 23505)を`is_unique_violation`で判別し、呼び出し側(ハンドラ)が
 //! `domain::model::Error::DuplicateUniqueId`へ写像する。
 
-use sqlx::PgPool;
-
 /// 新規ユーザーを1件挿入し、採番されたIDを返す。
-/// 1リクエスト1文操作なので、これ自体がすでに1トランザクションとして原子的
-/// (decision 0002。formal/Bbs/Invariant.leanの`register_atomic`が示す
-/// 「検査を全て通過した最後に一度だけ書き込む」構造に対応する)。
-pub async fn insert(
-    pool: &PgPool,
+///
+/// `executor`は`&PgPool`(単発クエリ)にも`&mut Transaction`(呼び出し元が開いた
+/// トランザクション)にも当てはまるようにジェネリックにしてある(decision 0002:
+/// register.rsのハンドラは`db::with_transaction`で開いたトランザクション越しに
+/// これを呼ぶ)。
+pub async fn insert<'e, E>(
+    executor: E,
     unique_id: &str,
     password_hash: &str,
     display_name: &str,
-) -> Result<i64, sqlx::Error> {
+) -> Result<i64, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     sqlx::query_scalar!(
         "insert into users (unique_id, password_hash, display_name) values ($1, $2, $3) returning id",
         unique_id,
         password_hash,
         display_name,
     )
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 
@@ -45,22 +48,26 @@ pub struct UserCredentials {
 /// ユニークIDでユーザーを引く。存在しなければ`None`(呼び出し側はこれと
 /// パスワード不一致を同一の`InvalidCredentials`に潰す。formal/Bbs/Op.leanの
 /// `login`が同じ判断をしている: 列挙攻撃を避けるため区別しない)。
-pub async fn find_by_unique_id(
-    pool: &PgPool,
+pub async fn find_by_unique_id<'e, E>(
+    executor: E,
     unique_id: &str,
-) -> Result<Option<UserCredentials>, sqlx::Error> {
+) -> Result<Option<UserCredentials>, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     sqlx::query_as!(
         UserCredentials,
         "select id, password_hash, display_name from users where unique_id = $1",
         unique_id
     )
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::PgPool;
 
     #[sqlx::test]
     async fn insert_returns_a_fresh_id(pool: PgPool) {

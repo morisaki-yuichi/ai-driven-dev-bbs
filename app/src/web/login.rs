@@ -16,7 +16,7 @@ use sqlx::PgPool;
 
 use crate::db;
 use crate::domain::model::Error as DomainError;
-use crate::web::cookies::build_session_cookie;
+use crate::web::cookies::{append_cookie, build_session_cookie};
 use crate::web::csrf::{CsrfForm, CsrfToken, rotate_csrf_cookie};
 use crate::web::error::AppError;
 use crate::web::params::LoginForm;
@@ -95,6 +95,18 @@ pub async fn show(Extension(CsrfToken(csrf_token)): Extension<CsrfToken>) -> Res
 }
 
 /// POST /login。AC02-1〜AC02-3。
+///
+/// decision 0002(critical): 状態を変える書き込みは`db::with_transaction`越しに行い、
+/// Errを返す経路では必ずロールバックする(foundation-plan.md §3)。
+///
+/// Why-not: 認証情報の照合(読み取り)とargon2検証をトランザクションの内側に入れない。
+/// argon2は意図的に数十〜数百msのCPUを使うため、その間トランザクションを開いたままに
+/// すると、プールの接続とPostgres側のバックエンドを`idle in transaction`のまま占有する。
+/// `POST /login`は未認証で叩けるので、同時ログイン試行がプールを飽和させ、
+/// 同じプールを共有するアプリ全体が接続待ちで止まりうる。この操作の書き込みは
+/// セッション作成の1回だけなので、トランザクションを検証通過後に絞っても
+/// 「失敗時に部分書き込みが残らない」(formal/Bbs/Invariant.leanの`login_atomic`
+/// = NoWriteOnError)は変わらない。
 pub async fn submit(
     State(pool): State<PgPool>,
     Extension(CsrfToken(csrf_token)): Extension<CsrfToken>,
@@ -140,23 +152,18 @@ pub async fn submit(
         ));
     }
 
-    // decision 0007: 多重セッションを許可する(既存セッションを破棄しない)。
-    let session_id = db::sessions::create(&pool, user.id).await?;
+    db::with_transaction(&pool, move |mut tx| async move {
+        // decision 0007: 多重セッションを許可する(既存セッションを破棄しない)。
+        let session_id = db::sessions::create(&mut *tx, user.id).await?;
 
-    let mut response = Redirect::to("/").into_response();
-    let cookie = build_session_cookie(session_id);
-    // Why-not: 変換失敗を`if let Ok(..)`で読み飛ばさない。セッションCookieを
-    // 載せられなかったのに「/へリダイレクト」だけ返すと、DBにはセッションが
-    // 残っているのにクライアントは未ログインのまま、という「失敗したのに成功した
-    // ことになる」応答になる。UUID由来の値なのでHeaderValueへの変換は実際には
-    // 失敗しないが、到達不能であることと握り潰してよいことは別なので、
-    // エラーとして伝播させ、この操作全体を失敗させる。
-    let value = HeaderValue::from_str(&cookie.to_string()).map_err(|e| {
-        AppError::Internal(format!("session cookie is not a valid header value: {e}"))
-    })?;
-    response.headers_mut().append(header::SET_COOKIE, value);
-    // decision 0021 決定5: ログイン成功時にCSRFトークンをローテーションする
-    // (F01から持ち越されていた実装。F02のスコープ)。
-    rotate_csrf_cookie(&mut response);
-    Ok(response)
+        let mut response = Redirect::to("/").into_response();
+        // 変換失敗を握り潰さない理由は`cookies::append_cookie`のWhy-notに書いてある
+        // (ここでエラーになればトランザクションはcommitされずロールバックされる)。
+        append_cookie(&mut response, build_session_cookie(session_id))?;
+        // decision 0021 決定5: ログイン成功時にCSRFトークンをローテーションする
+        // (F01から持ち越されていた実装。F02のスコープ)。
+        rotate_csrf_cookie(&mut response);
+        Ok((response, tx))
+    })
+    .await
 }
