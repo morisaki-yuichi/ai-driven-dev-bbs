@@ -1,12 +1,9 @@
-mod db;
-mod domain;
-mod web;
-
 use axum::{Router, middleware::from_fn_with_state, routing::get};
 use sqlx::PgPool;
 
-use crate::domain::model::Error as DomainError;
-use crate::web::error::AppError;
+use bbs::domain::model::Error as DomainError;
+use bbs::web::error::AppError;
+use bbs::web::middleware;
 
 #[tokio::main]
 async fn main() {
@@ -24,10 +21,7 @@ async fn main() {
     // "/" はP03(スレッド一覧画面)。AC09-1によりログイン必須。
     let app = Router::new()
         .route("/", get(|| async { "ok" }))
-        .route_layer(from_fn_with_state(
-            pool.clone(),
-            web::middleware::require_auth,
-        ))
+        .route_layer(from_fn_with_state(pool.clone(), middleware::require_auth))
         .fallback(fallback)
         .with_state(pool);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
