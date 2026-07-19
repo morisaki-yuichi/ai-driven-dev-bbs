@@ -1,0 +1,33 @@
+# セッションログ: 2026-07-19 #06 技術選定と基盤構築計画（フェーズ1）
+
+- フェーズ: 1（技術選定・基盤構築計画）
+- 今回やったこと:
+    - `dev-docs/requirements-analysis.md` を要件の正典として読み、関連する decision（0002 / 0007 / 0008 / 0011 / 0013）と `harness-invariants.md` を確認した。生の `docs/` からの要件再導出は行っていない。
+    - ユーザー指定の選定軸（Tier 0 ゲート / Tier 1: A・B / Tier 2: C〜G）に従い、候補バンドル3案（Rust / TypeScript / Go）＋参考2案（Python / C#）を比較してチャット上で提案した。
+    - 提案に先立ち、**このアプリのエラー面 E1〜E5 を確定**させ、A を「型の絶対強度」ではなく「E1〜E5 のうちビルド時に落ちる割合」で採点した。E3（SQL/スキーマ不一致）・E4（テンプレート不整合）が支配的であると判定。
+    - **静的保証（メモリ安全・データ競合排除）に守る対象があるかを論証した**。全状態が DB 上にあり（0002・0007）、プロセス内に共有可変状態が存在しないため、所有権・借用検査が守る対象はほぼ空と結論。Rust 採用後もこれを A の論拠に含めていない。
+    - B の採点根拠として (a) インクリメンタルビルド (b) テスト一式 (c) 静的検査のみ (d) 変更ごとの必須儀式 の所要時間を**桁のバンド**で予測し、比較表に明記した。
+    - ユーザーの選択（J-1: Rust、J-2〜J-4: 推奨どおり）を受けて、成果物4点を作成した。
+    - 作成: `dev-docs/decisions/TEMPLATE.md`（frontmatter 形式）、`dev-docs/decisions/README.md` 更新（importance / decided_by の定義・索引・`decided_by=ai` の絞り込み索引を追加）、`dev-docs/decisions/0016-tech-stack.md`、`dev-docs/foundation-plan.md`。
+- 決めたこと:
+    - **技術スタックを確定した**（decision 0016 / importance: critical / decided_by: ai+user）。Rust + Axum + Askama + sqlx + PostgreSQL 17、セッションは `sessions` テーブル自作 ＋ HttpOnly Cookie、パスワードは argon2、実行環境は Docker Compose（app + db）、テストは `cargo test` ＋ `#[sqlx::test]`。
+    - **Tier 1（A・B）だけで採点した AI の推奨は TypeScript 案だった**。採否を分けたのは Tier 2 の E（学習価値）、具体的には Lean 形式化（`formal/`）と Rust の `Result` ＋ `enum` の 1 対 1 対応を重視するというユーザー判断である。この経緯を decision 0016 §6.1 にそのまま記録し、**E を A に密輸しない**ようガードレールを明示した（decision 0016）。
+    - 高い B を A で取り返す論証を decision 0016 §6.2 に残した。**取り返せていない部分（テンプレ1行修正でも数十秒、借用検査を通すだけの反復）も純粋な損失として明記**し、退避条項は置いていない（decision 0016）。
+    - Tier 0 で実際に候補を落としたゲートは G-1（SSR/MPA 限定・0008 由来）と G-2（RDBMS ＋ トランザクション・0002/0007 由来）の2つのみ。誰も落とさない基準はゲートに置かず B・C へ回した（decision 0016 §3）。
+    - DB は PostgreSQL。decision 0011 の「`LIKE` は大文字小文字を区別する」が**既定のまま満たされる唯一の候補**であることが決め手（decision 0016 §6）。
+    - decision の連番は **0016**（当初指示は 0001 だったが既存の `0001-readme-editing-policy.md` と衝突するため。README の「番号を再利用しない」規約に従った）。`importance` / `decided_by` の frontmatter は 0016 以降に適用し、0001〜0015 は README 索引を正とする過渡運用とした（decision 0016 §6.3 / decisions/README.md）。
+    - `decided_by = ai` の該当は現時点で **0件**（0001〜0016 すべて `ai+user`）。
+    - 基盤の着手順を「H-06 の骨格（compose / Dockerfile / マイグレーション / `.sqlx`）→ 横断的制約（404・認証ガード・固定文言・クエリパラメータ）→ テスト基盤 → 機能実装」と定めた（foundation-plan §5）。
+- 次にやること:
+    - **ユーザーの承認待ち。** `dev-docs/foundation-plan.md` と `dev-docs/decisions/0016-tech-stack.md` の内容を提示済み。**承認前に実装・他ファイルの作成へは進まない。**
+    - 承認後、foundation-plan §5 の 1〜5（ツールチェーン固定 / compose / Dockerfile / マイグレーション / `.sqlx` オフラインキャッシュ）を空アプリで一度通し、`docker compose up` で起動できる状態を作る。
+    - その初回セッションで decision 0016 §5.2 の B バンド (a)〜(d) を**実測**し、予測との乖離を decision 0016 の変更履歴に追記する。
+    - あわせて decision 0011（`LIKE` の大文字小文字）と decision 0003（ユニーク ID の扱い）を PostgreSQL 上で1回まとめて実測確認する。
+    - `SETUP.md` を作成し、`README.md` に**リンク1行のみ**を追記する（P-08 の範囲内。事前承認不要だが実施後に報告する）。
+- 未解決事項:
+    - **D02**（スキーマ詳細: 主キーの型・タイムスタンプ型の具体・インデックス）— フェーズ2 で decision 起票。0009 から `timestamptz(3)` が示唆される。
+    - **D05**（CSRF 対策の要否）— 破壊的操作を POST にする方針のみ先に固め、対策の実装可否はフェーズ2。
+    - **D06**（POST-Redirect-GET の採否）、**D10**（P06 のパス不整合）、**D18**（削除確認ダイアログの有無。`window.confirm` は H-02 に影響しうる）、**D19**（スクロール連携の実現方式）、**D20**（ログイン後の復帰先。常に P03 で足りる見込み）— いずれもフェーズ2。
+    - **D14**（空 DB へ戻す手段）— `docker compose down -v` を `SETUP.md` に明記する方針まで決めたが、ドキュメント未作成。
+    - **Askama のバージョンリスク** — rinja のフォークと統合を経て API に変遷があり、本スタックで C（生成信頼性・幻覚リスク）が最も高い箇所。実装初回にバージョンを実測・ピン留めし、記憶ではなく公式ドキュメントを参照して書く。深刻化した場合の第一代替は maud（foundation-plan §1.3）。
+    - **`.sqlx/` の更新忘れリスク** — SQL 変更後に `cargo sqlx prepare` を忘れると評価者の Docker ビルドが壊れる。運用規律で担保する方針だが、チェック手段は未整備（foundation-plan §4.2）。
