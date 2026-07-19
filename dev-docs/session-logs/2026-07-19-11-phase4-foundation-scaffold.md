@@ -1,0 +1,35 @@
+# セッションログ: 2026-07-19 #11 フェーズ4 実装基盤の構築(foundation-plan.md §5 #1〜#15)
+
+- フェーズ: 4（実装フェーズ初回）
+- 今回やったこと:
+    - セッション冒頭、`CLAUDE.md`・直近セッションログ（`#10`）・`dev-docs/decisions/README.md`・`docs/product/issues/`・`docs/evaluation/scenarios/` を確認して状態把握し、ユーザーに要約報告した。
+    - ユーザー指示により、実装着手前の片付けとして `formal-model-and-decisions` ブランチ（フェーズ0〜3、12コミット、`main` 未マージ）を `main` へfast-forwardマージし `origin/main` へpush、旧ブランチを削除、実装用の新ブランチ `foundation-scaffold` を作成した（`dev-docs/workflow.md` の短命ブランチ規約への回帰）。
+    - `foundation-plan.md` §5 #1〜#13、および実測タスク（#14 クリーンclone確認、#15 Bバンド実測）を全て実施した。各項目は実機確認（`docker compose up`・`curl`・`psql`直接操作等）を伴って完了し、コミットごとにユーザー承認を得た。
+        - #1: `rust-toolchain.toml`（1.95.0固定）・`Cargo.toml`。Askamaはcontext7で最新安定版を確認したが`cargo add`の実際の取得結果は`0.16.0`（ドキュメント記載の0.14.0より新しい）。sqlxは`0.9.0`でフィーチャー名が`runtime-tokio-rustls`のような結合名から個別フラグに変更されていた。Askama+Axum+tokioの最小サーバをビルド・起動しレンダリングを確認。
+        - #2: `compose.yaml`・`.env.example`（ルート）・`app/.env.example`（ホスト開発用、db:5432/localhost:5432の向き先の違いに対応）。dbのhealthcheckとpsql接続を確認。あわせてPostgreSQL実機でLIKEの大文字小文字・text主キーの大文字小文字を検証し、decision 0016に実測結果を追記（predicted通り、追加設定不要）。
+        - #3: `Dockerfile`（`rust:1.95.0-bookworm` + `cargo-chef`手動インストール、`debian:bookworm-slim`ランタイム）。ベースイメージタグの実在を`docker manifest inspect`で確認してから採用。`docker compose up`でapp+db連携・200応答を確認。
+        - #4: `migrations/0001_init.sql` + `sqlx::migrate!`。マイグレーションを書くために主キー型・URLのID形式・インデックス方針（D02）が必要になり、decision 0019（提案・未承認）を起票。実DBにマイグレーションを適用しスキーマを確認。
+        - #5: `cargo sqlx prepare`で`.sqlx/`を生成。DBなし・`DATABASE_URL`未設定時は自動的にオフラインキャッシュへフォールバックすることを実測確認。
+        - #6・#9: `domain/model.rs`（`Error`/`ValidationFailure`/`PasswordWeakness`、formal/Bbs/Basic.leanの対応）、`web/error.rs`（`AppError`→HTTP写像、C-10の一律404）、`templates/layout.html`・`error.html`（C-01固定文言、P07）。ヘッダーのプロフィール編集リンクに必要な path が未決定（D10）だったため decision 0020（提案・未承認）を起票し `/profile/edit` を採用。404ページのレンダリングをcurlで確認。
+        - #8: `db/sessions.rs`（セッションCRUD、uuid v4のCSPRNGトークン）・`db/password.rs`（argon2）。
+        - #7: `web/cookies.rs`（HttpOnly/SameSite=Lax/Path=/、Secureなし、有効期限なし）・`web/middleware.rs`（認証ガード+Cache-Control: no-store）。`/`をP03として認証ガードを実装に適用し、未ログイン時の303リダイレクト・有効セッションでの200+no-store・404フォールバックが認証ガードの影響を受けないことを実機で確認。
+        - #10: `domain::model::DELETED_COMMENT_TEXT`（decision 0017に基づく集約、字句一致の単体テスト付き）。
+        - #11・#12: `domain/query.rs`（`SortKey`・`contains_substr`・`render_comment_body`・`paginate`/`Page`・`sort_thread_fields`、formal/Bbs/Query.leanの対応）、`domain/validation.rs`（パスワード強度・表示名・ユニークID整形式、formal/Bbs/Validation.leanの対応）。`web/params.rs`は`SortKey`をdomain層に一元化するようリファクタ。Rustの`str::trim()`がU+3000・U+00A0を含め正しく空白判定することを実測確認し、decision 0004が警告する「言語ごとに異なる空白判定」の罠を回避。単体テスト29件を追加、すべてミリ秒オーダーで完走。
+        - #13: `src/lib.rs`を切り出し（バイナリのみのcrateは`tests/`から参照できないため）、`app/tests/sessions_test.rs`で`#[sqlx::test]`のひな形を実装。テストごとの使い捨てDB自動生成・migrations自動適用を実機確認（4件: セッション作成→解決、未知セッション、ログアウト失効、多重セッション）。
+        - #14: リポジトリをクリーンcloneし、`.env`用意のみで`docker compose up --build`を実行。合計1分33秒でapp+dbが起動し、認証ガード・404フォールバックとも実クローンで動作することを確認した。
+        - #15: Bバンド(a)〜(d)・コールドビルド・`cargo-chef`キャッシュ効果を実測し、decision 0016 §5.2の予測（数十秒〜分単位）に対し実測が大幅に速い（`cargo check`0.4秒、`cargo build`1.1秒、`cargo test --lib`1.19秒、`cargo sqlx prepare`1秒未満、コールドビルド1分33秒）ことを確認し、decision 0016の変更履歴に記録した。外れた理由（現時点でコード規模が小さいこと、`cargo-chef`緩和策が効いていること）も明記し、決定自体は変更していない。
+    - 各項目ごとにユーザー承認を得てから個別コミット（Conventional Commits、1論理変更1コミット）。全作業を通じて`cargo fmt`/`cargo clippy`警告ゼロ・`cargo test`全通過を都度確認した。
+- 決めたこと:
+    - ブランチ運用: `formal-model-and-decisions`を`main`へマージ・削除し、以降は`foundation-scaffold`のような短命ブランチで作業する（`dev-docs/workflow.md`の規約どおりに復帰、ユーザー判断）。
+    - **decision 0019（D02: スキーマ詳細、提案・未承認）**: 主キーは連番`bigint identity`（`sessions`のみCSPRNGランダムトークンの`text`）。URLはそのまま主キーを使う。索引は`comments(thread_id)`のみ追加。decision 0009のタイブレーク前提（id順=作成順）が連番でないと成立しないことを根拠にした。
+    - **decision 0020（D10: P06のパス、提案・未承認）**: `/profile/edit`を採用（`ui_design.md`の構造化された画面一覧を、`common_layout.md`の例示より優先）。
+    - decision 0016に実測結果を2回追記（PostgreSQLのLIKE/ユニークID大文字小文字、Bバンド予測との乖離）。決定（採用スタック）自体は変更なし。
+    - 認証ガード適用対象として`/`をP03（スレッド一覧、AC09-1でログイン必須）とみなし実装した。
+- 次にやること:
+    - **decision 0019・0020は`decided_by: ai`の未承認決定。** ユーザーの棚卸し・承認待ち（`dev-docs/decisions/README.md`の`decided_by = ai`索引を参照）。
+    - `foundation-plan.md` §5 #1〜#15が完了し、基盤構築フェーズが一区切りついた。次セッションから `docs/product/issues/01_user_registration.md` 以降の機能実装（TDD: Red→Green→Refactor）に入る。
+    - `foundation-scaffold`ブランチは全基盤完了時点でまとめて`main`にマージし削除する方針（ユーザー選択）。マージのタイミングをユーザーに確認する。
+- 未解決事項:
+    - **D05**（CSRF対策の要否）・**D06**（POST-Redirect-GETの採否）・**D14**（`SETUP.md`自体は未作成。内容はdecision 0018で確定済み）・**D18**（削除確認ダイアログ）・**D19**（スクロール連携の方式）・**D20**（ログイン後の復帰先、要件分析D20とは別に常にP03で足りるとの整理済み）— いずれも未決定（変化なし）。
+    - decision 0019・0020は未承認のため、機能実装（特にF01登録・P06プロフィール編集）着手前にユーザー承認が必要。
+    - `domain/query.rs`の`ThreadSortFields`はソート専用の軽量構造体であり、実際のDB行（`db/threads.rs`、未実装）との変換方法は機能実装フェーズで確定する。ソートをRust側(取得後インメモリ)で行うかSQLの`ORDER BY`に寄せるかは、現状Lean形式モデルとの対応を優先しRust側インメモリソートを前提に設計したが、この設計判断自体はdecision化していない。
