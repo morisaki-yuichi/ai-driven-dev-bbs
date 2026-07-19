@@ -5,3 +5,6 @@
 # OS / editor
 .DS_Store
 *.swp
+
+# 接続情報の実体(.env.exampleから作る)。秘匿キーではないがコミットしない。
+.env
