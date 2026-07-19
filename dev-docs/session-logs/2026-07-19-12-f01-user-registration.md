@@ -1,0 +1,32 @@
+# セッションログ: 2026-07-19 #12 F01 ユーザー登録の実装（オーケストレーション運用初回）
+
+- フェーズ: 5（機能実装フェーズ、F01ユーザー登録初回）
+- 今回やったこと:
+    - 進行は `orchestration/` 配下のプレイブック（`orchestration/implementation-playbook.md`）に沿ったオーケストレーション体制で行った: **S1（状態復元）→ G1 → D05確定 → S2（形式証明＋TDD実装）→ S3（レビュー）→ G3（裁定）→ 裁定反映**。
+    - **D05（CSRF対策の方式）を確定**し、decision 0021として記録した。Origin/Refererによる同一オリジン検証（ミドルウェア、全POST対象）＋セッション非依存の二重送信トークン（Cookie＋hidden input）の組み合わせを採用。未ログインPOST（`POST /register`・`POST /login`）も保護対象に含め、トークンは複数タブ・ブラウザバック時の誤検知を避けるためワンタイム化しない方針とした。
+    - **形式モデル（`formal/`）**: `register`（F01登録、`formal/Bbs/Op.lean`）の原子性（decision 0002、1リクエスト＝1トランザクション）を表す `register_atomic` の `sorry` を解消し、`NoWriteOnError`/`NoWriteOnSuccess`の合成補題群（`bind_noWriteOnError`／`bind_noWriteOnSuccess`／`ensure_*`／`get_*`／`findUserByUniqueId_noWriteOnSuccess`／`guardNone_noWriteOnSuccess`）を `formal/Bbs/Invariant.lean` に追加して証明した。証明を成立させるため `formal/Bbs/Db.lean` に早期リターン用の補助 `Action.guardNone` を新設し、`formal/Bbs/Op.lean` の `register` 定義をdo記法内の直接`match`から `guardNone` 経由に書き換えた（Leanのdo記法がjoin point形式にelaborateされ`Action.bind x f`の単純形にならず証明が通らなかったため）。`formal/Bbs/Validation.lean` の `uniqueIdWellFormed` をトリム後の空判定（`!isBlank u`）に修正し、Rust側の対応する修正と同期させた。
+    - **TDD実装（Red→Green→Refactor）**: `app/tests/register_test.rs`（`#[sqlx::test]`、10ケース）を先に書き、`app/src/domain/validation.rs`（`register_validation`：形式検査→強度検査→表示名検査の順で最初の1件のみ返す、decision 0006）、`app/src/db/users.rs`（新規、ユニークID重複検査・INSERT）、`app/src/web/register.rs`（新規、`GET/POST /register` ハンドラ）、`app/src/web/login.rs`（新規、`GET /login` の暫定スタブ）、`app/src/web/csrf.rs`（新規、`csrf_token_middleware`／`same_origin_guard`）、`app/src/domain/csrf.rs`（新規、`tokens_match`・`is_same_origin` の純粋関数）、`app/src/web/params.rs`（`RegisterForm`）、`app/src/web/cookies.rs`（CSRFトークンCookieのビルダ追加）、`app/src/web/error.rs`（`AppError::Csrf`／`AppError::Internal`、403応答）、`app/templates/register.html`・`app/templates/login.html`・`app/templates/csrf_error.html` を実装した。`app/src/web/mod.rs` に `build_router()` を切り出し、`main.rs`とテストが同じ配線を共有する形にした。
+    - **S3（レビュー）で重大1件を検出・修正した**: `app/src/main.rs` に `tracing` の購読者（subscriber）が一度も登録されておらず、`tracing::warn!`/`error!` が全て握り潰されていた。decision 0021 決定5が要求する「CSRF検証失敗時に`tracing::warn!`を1行残す」が実質的に未達成だった。`tracing_subscriber::fmt().with_max_level(INFO).init()` を `main()` の冒頭に追加して解消した（`EnvFilter`は使わない方針。理由はコード内Why-notコメントを参照）。
+    - G3裁定を受けて以下を実装に反映した（詳細は下記「決めたこと」）: `unique_id_well_formed` のトリム＋空白のみ拒否（Rust・Lean双方）、argon2ハッシュ化の `tokio::task::spawn_blocking` 化、`same_origin_guard` の安全メソッド（GET/HEAD/OPTIONS）以外全体への適用、`aria-live="assertive"` 付き共通メッセージエリアの実装、`RegisterForm` の手動 `Debug` 実装によるパスワード・CSRFトークンの伏字化（`app/src/web/params.rs`）。
+    - `cargo test`・`cargo clippy`・`cargo fmt` を都度確認しながら進めた（DoD準拠）。`app/tests/register_test.rs` に10ケース、`app/src/domain/validation.rs`・`app/src/web/params.rs` にユニットテストを追加。
+    - `dev-docs/decisions/README.md`・`dev-docs/requirements-analysis.md`（D05のステータス表）を更新した。
+- 決めたこと:
+    - D05: CSRF対策の方式（Origin検証＋セッション非依存の二重送信トークン、未ログインPOSTも保護対象、トークンは非ワンタイム）（decision 0021、ai+user）。
+    - 登録フォーム（P02）失敗時の再表示で、`unique_id`・`display_name`は直前の値を保持するがパスワード欄は常に空にする（decision 0022、ai+user）。
+    - 全フォームに `novalidate` を付け、ブラウザネイティブのクライアント側検証は採用せず、検証はサーバ側（`domain/validation.rs`）に一本化する（decision 0023、ai+user）。`ui-ux-guidelines.md` §3の二重バリデーション要件に対する意図的な逸脱として明記した。
+    - G3裁定（口頭確定、いずれもコード内に反映済み）:
+        - `unique_id_well_formed` をトリム後の空判定に修正（空白のみのユニークIDを拒否）。Lean側 `uniqueIdWellFormed` も同時に同期修正。
+        - argon2のハッシュ化処理を `tokio::task::spawn_blocking` に移す（検査順序自体は変更しない）。
+        - `same_origin_guard` の適用範囲を「POSTのみ」から「安全メソッド（GET/HEAD/OPTIONS）以外すべて」に拡大。
+        - `aria-live="assertive"` 付き共通メッセージエリアを追加し、`RegisterForm` は手動 `Debug` 実装でパスワード・CSRFトークンを伏字化する。
+        - `maxlength` 属性のUTF-16コードユニット単位とC-03のコードポイント単位判定の乖離は、評価シナリオのデータがBMP内に収まることを根拠にBMP限定運用として許容し、テンプレートにWhy-notコメントで明示するに留める（対応の追加実装はしない）。
+        - 送信ボタンの二重送信抑止は、decision 0008（SSR/MPA・JSなし）の下ではJSなしに実現できないため実装を見送り、現状維持（DB側の一意制約に委ねる）で決着した。
+- 次にやること:
+    - `GET /login` は暫定スタブのままであり、ログインフォーム本体（F02）の実装に着手する。
+    - `/static` 配信の接続と `tracing` 初期化は、F01本体とは別コミットに分ける方針が決まっている。未コミットの現状の差分をこの方針に沿って複数コミットへ分割し、ユーザー承認後にコミット・PR作成を行う（このセッションではgit操作を行っていない）。
+    - CSRFトークンのローテーション（ログイン成功時・ログアウト時の再発行、decision 0021が定めるが未実装）はF02/F03で対応する。
+    - `.field-error:empty` のCSSガードと `render_form` の無言分岐（レビューで指摘された軽微2件）は未対応のまま残っている。対応要否を含めて次セッション以降に持ち越す。
+- 未解決事項:
+    - 二重送信抑止の論点（D05近傍、明示の論点IDなし）: F01では「一意制約に委ねる」で決着したが、F05スレッド作成・F07コメント作成の対象テーブルには一意制約が無いため、同じ論点がF05着手時に再浮上する可能性が高い。次にこの論点へ着手する際に再検討が必要。
+    - `.field-error:empty` のCSSガードと `render_form` の無言分岐（軽微2件、対応未定）。
+    - decision 0021が定めるCSRFトークンのローテーション（ログイン成功時・ログアウト時）は未実装（F02/F03で対応予定）。
