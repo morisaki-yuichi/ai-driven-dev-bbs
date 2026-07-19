@@ -34,6 +34,7 @@
 - **[要件定義 (Issues)](./docs/product/issues/)**: 各機能の詳細な仕様と受け入れ基準（AC）。
 - **[画面設計 (Designs)](./docs/product/designs/)**: UIの構成、共通レイアウト、画面遷移の定義。
 - **[テストシナリオ (Scenarios)](./docs/evaluation/scenarios/)**: 最終評価時にパスすべきE2Eテストの合格基準。
+- **[セットアップ・起動手順](./SETUP.md)**: クリーンな環境からのセットアップ・起動・リセット手順。
 
 ---
 
