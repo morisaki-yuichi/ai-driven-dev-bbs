@@ -1,5 +1,5 @@
 -- 初期スキーマ。DDLのみ・シードデータなし(H-08 / H-11、foundation-plan.md §4.1)。
--- 主キー型・URLのID形式・インデックス方針は decision 0019(D02、提案・未承認)による。
+-- 主キー型・URLのID形式・インデックス方針は decision 0019(D02)による。
 
 create table users (
     id bigint generated always as identity primary key,

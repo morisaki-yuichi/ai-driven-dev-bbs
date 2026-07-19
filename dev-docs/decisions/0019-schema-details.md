@@ -3,8 +3,8 @@ id: 0019
 title: "D02: スキーマ詳細(主キー型・URLのID形式・インデックス)"
 date: 2026-07-19
 importance: major
-decided_by: ai
-status: 提案
+decided_by: ai+user
+status: 決定済
 ---
 
 # 0019 D02: スキーマ詳細(主キー型・URLのID形式・インデックス)
@@ -54,9 +54,9 @@ status: 提案
 - 検索（decision 0011: `LIKE '%kw%'`）用の索引は追加しない。decision 0016 §6.3が「全文検索インデックスは不要」と既に結論しており、先頭ワイルドカードのLIKEはbtree索引を活用できないため、`pg_trgm`等の追加は本件の規模（教材アプリ）に対して過剰な複雑化になる。
 - 文字数・文字種などdecision 0003〜0006のバリデーションルールは、SQLの`CHECK`制約として重複させない。`domain/validation.rs`の単体テストで担保し、1リクエスト=1トランザクション（decision 0002）の中でSQL到達前に検証する。
 
-## 決定（2026-07-19 AI判断・未承認）
+## 決定（2026-07-19 ユーザー判断）
 
-上記の提案どおり、**連番主キー（`bigint identity`、`sessions`のみ`text`のCSPRNGトークン）・URLはそのまま主キーを使う・索引は`comments(thread_id)`のみ追加**で実装を進める。**この決定はAI単独判断であり、人間の承認を経ていない。**
+上記の提案どおり、**連番主キー（`bigint identity`、`sessions`のみ`text`のCSPRNGトークン）・URLはそのまま主キーを使う・索引は`comments(thread_id)`のみ追加**で実装を進める。ユーザーが承認した。
 
 ## 影響
 

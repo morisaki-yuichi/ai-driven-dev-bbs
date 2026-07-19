@@ -3,8 +3,8 @@ id: 0020
 title: "D10: ユーザー編集画面(P06)のパス"
 date: 2026-07-19
 importance: minor
-decided_by: ai
-status: 提案
+decided_by: ai+user
+status: 決定済
 ---
 
 # 0020 D10: ユーザー編集画面(P06)のパス
@@ -33,9 +33,9 @@ status: 提案
 - `common_layout.md` §4 の `/edit_profile` は「認証ガードの挙動」を説明する文中の**例示**であり、パス自体を主題として定義した記述ではない。
 - 構造化された一覧表を、説明文中の例示より優先するのが自然な読み方である。
 
-## 決定（2026-07-19 AI判断・未承認）
+## 決定（2026-07-19 ユーザー判断）
 
-**P06のパスは `/profile/edit` とする。** decision 0016 §7.2・foundation-plan.md §7 が「フェーズ2。影響は小さい」としていたとおり、importance は `minor`。**この決定はAI単独判断であり、人間の承認を経ていない。**
+**P06のパスは `/profile/edit` とする。** decision 0016 §7.2・foundation-plan.md §7 が「フェーズ2。影響は小さい」としていたとおり、importance は `minor`。ユーザーが承認した。
 
 ## 影響
 
