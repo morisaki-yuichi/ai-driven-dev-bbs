@@ -18,6 +18,8 @@ pub enum AppError {
     /// decision 0021: 二重送信トークン不一致 / Origin不一致。C-10(404)とは別に
     /// 403として扱う(リソースの存否とは無関係な検証失敗のため)。
     Csrf,
+    /// 通常起こらない内部エラー(パスワードハッシュ化失敗等)。
+    Internal(String),
 }
 
 impl From<DomainError> for AppError {
@@ -35,6 +37,12 @@ impl From<sqlx::Error> for AppError {
 impl From<askama::Error> for AppError {
     fn from(e: askama::Error) -> Self {
         AppError::Template(e)
+    }
+}
+
+impl From<argon2::password_hash::Error> for AppError {
+    fn from(e: argon2::password_hash::Error) -> Self {
+        AppError::Internal(e.to_string())
     }
 }
 
@@ -81,6 +89,10 @@ impl IntoResponse for AppError {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
             }
             AppError::Csrf => csrf_error(),
+            AppError::Internal(msg) => {
+                tracing::error!(error = %msg, "internal error");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+            }
         }
     }
 }
