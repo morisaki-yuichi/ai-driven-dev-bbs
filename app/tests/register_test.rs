@@ -7,11 +7,8 @@ use axum::http::{Request, StatusCode, header};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
-const HOST: &str = "example.test";
-
-fn origin_header() -> String {
-    format!("http://{HOST}")
-}
+mod common;
+use common::{HOST, origin_header, urlencoding_stub};
 
 /// GET /register を叩き、(本文, Set-Cookieのcsrf_token値)を返す。
 async fn get_register_page(pool: &PgPool) -> (String, String) {
@@ -73,20 +70,6 @@ fn post_register_request(
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .body(Body::from(form))
         .unwrap()
-}
-
-// テスト用の最小限のパーセントエンコード(記号を含むパスワードを送るため)。
-fn urlencoding_stub(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[sqlx::test]

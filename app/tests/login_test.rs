@@ -5,28 +5,11 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use bbs::db::password;
 use sqlx::PgPool;
 use tower::ServiceExt;
 
-const HOST: &str = "example.test";
-
-fn origin_header() -> String {
-    format!("http://{HOST}")
-}
-
-async fn insert_test_user(pool: &PgPool, unique_id: &str, plain_password: &str) -> i64 {
-    let hash = password::hash(plain_password).unwrap();
-    sqlx::query_scalar!(
-        "insert into users (unique_id, password_hash, display_name) values ($1, $2, $3) returning id",
-        unique_id,
-        hash,
-        "テストユーザー01"
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap()
-}
+mod common;
+use common::{HOST, insert_test_user, origin_header, urlencoding_stub};
 
 /// GET /login を叩き、(本文, Set-Cookieのcsrf_token値)を返す。register_test.rsの
 /// `get_register_page`と同じ形。
@@ -64,19 +47,6 @@ async fn get_login_page(pool: &PgPool) -> (String, String) {
         .unwrap();
     let html = String::from_utf8(body.to_vec()).unwrap();
     (html, csrf_token)
-}
-
-fn urlencoding_stub(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 fn post_login_request(

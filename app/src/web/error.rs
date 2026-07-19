@@ -46,6 +46,12 @@ impl From<argon2::password_hash::Error> for AppError {
     }
 }
 
+// Why: これらのエラーページはCSRFトークンを持たない。`layout.html`のログアウト
+// フォーム(decision 0021)が要求するトークンは`CurrentUser`の中にあり、
+// `current_user`が`None`である限りフォーム自体が描画されないため、払い出す必要が無い
+// (views.rsのWhy参照)。ダミー値を置かずに済む形にしてある ―― 置いてしまうと、
+// 将来これらのページが認証状態を持った瞬間に、必ず403になるログアウトボタンを
+// 出すようになる。
 #[derive(Template)]
 #[template(path = "error.html")]
 struct NotFoundTemplate {
