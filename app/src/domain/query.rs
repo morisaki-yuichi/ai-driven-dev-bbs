@@ -8,11 +8,11 @@
 //! `SortKey`・`contains_substr`・`escape_like_pattern`・`Hit`・`hit_location`・
 //! `render_comment_body`・`paginate`はF09/F11(`db/threads.rs`・`web/thread_list.rs`・
 //! `web/thread_detail.rs`)が使用している。`ThreadSortFields`/`sort_thread_fields`は
-//! F12(ソートUI、範囲外)向けの先行実装で、現状は`db/threads.rs::search`が
-//! `order by`をSQL側に固定で持つため未使用だが、この crate はバイナリと統合テストの
-//! 双方から参照される`lib`ターゲット(`src/lib.rs`)であり、`pub`項目はクレート外から
-//! 参照されうる公開APIとして扱われるため、未使用でも`dead_code`警告は出ない
-//! (実測確認済み、`#[allow(dead_code)]`は不要)。
+//! F09/F11の時点ではF12向けの先行実装で未使用だったが、**F12(ソートUI)の実装で
+//! 実際に使われるようになった** ―― `web/thread_list.rs`が`db::threads::search`の
+//! 結果を`ThreadSortFields`へ写し、この`sort_thread_fields`で整列してから描画する。
+//! 一覧の表示順を決めているのはSQLの`order by`ではなくこの純粋関数のほう
+//! (`db/threads.rs`冒頭のdocコメント参照)。
 
 use crate::domain::model::DELETED_COMMENT_TEXT;
 

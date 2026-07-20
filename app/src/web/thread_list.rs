@@ -1,13 +1,27 @@
 //! GET / (P03スレッド一覧画面)。F09(スレッド一覧表示、issues/09)・
-//! F11(検索、issues/11_search_function.md)。
+//! F11(検索、issues/11_search_function.md)・F12(ソート、issues/12_sort_function.md)。
 //!
-//! F09の範囲は「初期表示順のみ」(ユーザー承認済みのスコープ)。decision 0009が定める
-//! 作成日時降順(idタイブレーク)と、ページネーション・空状態表示を実装する。
-//! ソート切替UI・他のソートキーはF12の範囲であり、ここでは実装しない
-//! ――`domain::query::SortKey`はF12全体を見越した先行実装だが、ここではDB側の
-//! `order by created_at desc, id desc`(decision 0009)がその`CreatedDesc`1本だけを
-//! 常に使う形に相当する。`ListParams`は`sort`もパースするが、このハンドラは
-//! 値を検証せずページネーションリンクへ素通りさせるだけ(C-13、下記参照)。
+//! **F12**: `db::threads::search`のSQLは`order by created_at desc, id asc`固定の
+//! まま変えない ―― ソート適用はRust側で行う(ユーザー承認済みのスコープ)。
+//! 理由: functional core路線に忠実にし、`formal/Bbs/Query.lean`の`sortThreads`と
+//! 実装を**人手で1対1対応**させるため。
+//!
+//! **この対応は機械的な保証ではない**。Leanの証明
+//! (`sorted_by_commentCount`・`createdAsc_head_is_oldest`)が保証するのは
+//! **モデル側**の`sortThreads`の性質だけで、Rustのコードを一切拘束しない ――
+//! F12のレビューで実際に変異テストを行い、`domain::query`の比較関数を壊しても
+//! `lake build`が成功する(証明は通ったまま)ことを確認している。Leanから得られる
+//! のは「その順序仕様に穴が無い」ことの確信であって、実装がその仕様どおりである
+//! ことの証拠ではない。後者を担保するのは`domain/query.rs`のRust側テストと
+//! `tests/sort_test.rs`。両者を1対1に保つのは人間とAIの規律の側の仕事であり、
+//! 片方を変えたらもう片方も見ること。
+//!
+//! 手順は「`SearchRow`→`domain::query::ThreadSortFields`へ変換
+//! → `domain::query::sort_thread_fields`で整列 → 整列後のid順で表示アイテムを引き直す」
+//! (下記`show`本体)。`ThreadSortFields`は`id`/`created_at_millis`/`comment_count`/
+//! `last_updated_at_millis`のみを持ち`title`・`body`・`author_display_name`を
+//! 持たないため、この変換が必要になる。`OffsetDateTime`→`i64`ミリ秒変換は
+//! `web::format::to_millis`(F12で新設)。
 //!
 //! 一覧の取得方式は「全件取得 → `domain::query::paginate`(純粋関数)に渡す」。
 //! SQL側にLIMIT/OFFSETを足さない(functional coreの設計思想に整合させ、
@@ -40,7 +54,7 @@ use crate::db::sessions::AuthenticatedUser;
 use crate::domain::query::{self, Hit};
 use crate::web::csrf::CsrfToken;
 use crate::web::error::AppError;
-use crate::web::format::format_created_at;
+use crate::web::format::{format_created_at, to_millis};
 use crate::web::params::{ListParams, encode_query_component};
 use crate::web::views::CurrentUser;
 
@@ -107,9 +121,8 @@ struct ThreadListTemplate {
 /// `AuthenticatedUser`がリクエスト拡張に必ず存在する(C-09、AC09-1、AC11-1)。
 /// `Cache-Control: no-store`は`require_auth`側で一括付与される(C-11)。
 ///
-/// `ListParams::parse`が`q`/`sort`/`page`を一体でパースする。`sort`は現状
-/// `SortKey::CreatedDesc`固定(F12は範囲外、上記モジュールdocコメント参照)で、
-/// ページネーションリンクへ素通りさせるだけ(C-13)。`q`はF11検索に使う。
+/// `ListParams::parse`が`q`/`sort`/`page`を一体でパースする。`q`はF11検索、
+/// `sort`はF12ソート、`page`はページネーションに使う。
 pub async fn show(
     State(pool): State<PgPool>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -119,12 +132,35 @@ pub async fn show(
     let params = ListParams::parse(&raw_params);
 
     // F11/decision 0011: `search`は空クエリで全件を返すので、一覧表示(F09)と
-    // 検索(F11)を同じ取得経路に統一できる(decision 0009の初期表示順=
-    // `order by created_at desc, id desc`はSQL側で確定、db::threads::search参照)。
+    // 検索(F11)を同じ取得経路に統一できる。SQL側の`order by`は再整列前の
+    // 初期順序にすぎず、表示順は下の`sort_thread_fields`が決める
+    // (db::threads::search参照)。
     let rows = db::threads::search(&pool, &params.q).await?;
-    let items: Vec<ThreadListItem> = rows
+
+    // F12: ソートはRust側で行う(SQLの`order by`は固定のまま、モジュールdocコメント
+    // 冒頭参照)。`SearchRow`→`ThreadSortFields`へ変換 → `sort_thread_fields`で
+    // 整列 → 整列後のid順で`SearchRow`を引き直す。
+    let mut sort_fields: Vec<query::ThreadSortFields> = rows
+        .iter()
+        .map(|r| query::ThreadSortFields {
+            id: r.id,
+            created_at_millis: to_millis(r.created_at),
+            comment_count: r.comment_count,
+            last_updated_at_millis: to_millis(r.last_updated_at),
+        })
+        .collect();
+    query::sort_thread_fields(&mut sort_fields, params.sort);
+    let mut rows_by_id: HashMap<i64, db::threads::SearchRow> =
+        rows.into_iter().map(|r| (r.id, r)).collect();
+
+    let items: Vec<ThreadListItem> = sort_fields
         .into_iter()
-        .map(|r| {
+        .map(|f| {
+            // `sort_fields`はソート前の`rows`から1対1で作った(id重複なし、
+            // `threads.id`はDBの主キー)ので、必ず引ける。
+            let r = rows_by_id
+                .remove(&f.id)
+                .expect("sort_thread_fields はidの集合を変えない(整列のみ)");
             // AC11-3/D19: ヒット箇所(本文優先、`formal/Bbs/Query.lean`の`hitIn`と同型)。
             // 空クエリでは常に本文ヒットになる(`contains_substr(_, "") == true`)ので、
             // 検索していない通常の一覧ではフラグメントは付かない。
