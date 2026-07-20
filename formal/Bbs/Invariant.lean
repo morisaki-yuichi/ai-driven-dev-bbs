@@ -2002,11 +2002,28 @@ theorem deleteThread_blocked_by_deleted_comment (db : Db) (sid : SessionId) (tid
 D03 方式①（JOIN 解決）の正しさ。表示名を変えた直後、
 その利用者の過去のスレッド・コメントはすべて新しい表示名で表示される。 -/
 
+/-- AC04-2: 表示名を変えると、その利用者の過去のスレッドの表示名も新しい値になる。
+
+    **結論は`some n`ではなく`some (Validation.trim n)`でなければならない**
+    （F06セッションのレビューで訂正）。旧言明は結論を`some n`（トリム前の生の入力）と
+    書いており、**偽**だった ―― `updateDisplayName`（`Op.lean`）は decision 0004 に従い
+    `Validation.trim newName`を保存し、`displayNameFailure`もトリム後の値で
+    検証する。したがって`n`が前後に空白を含むと、仮定`hv`を満たしたまま結論が破れる。
+
+    反例（`decide`で確認済み）: `n = " A "`。`displayNameValid " A " = true`
+    （トリム後"A"は1文字）だが、保存されるのは`"A"`なので
+    `authorDisplayName = some " A "`は成り立たない。
+
+    `sorry`のまま残す言明が偽だと、後続セッションがこれを補題として使った時点で
+    そこから導かれるものがすべて無価値になる（このファイル冒頭の方針、および
+    `thread_immutable`が同じ理由でF05時点に仮定を補われた経緯を参照）。証明を
+    後回しにすること自体は許すが、**言明は真の形で置く**。F04実装のサイクルで証明する。 -/
 theorem displayName_propagates (db : Db) (sid : SessionId) (uid : UserId) (n : String)
     (hs : db.sessions.find? (·.id = sid) = some ⟨sid, uid⟩)
     (hv : Validation.displayNameValid n = true) :
     let db' := (updateDisplayName sid n db).2
-    ∀ t ∈ db'.threads, t.authorId = uid → (toRow db' t).authorDisplayName = some n := by
+    ∀ t ∈ db'.threads, t.authorId = uid →
+      (toRow db' t).authorDisplayName = some (Validation.trim n) := by
   sorry
 
 /-! ### 7. 一覧・ソート・ページネーション (F09, F12, F13)
