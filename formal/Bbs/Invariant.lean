@@ -59,9 +59,287 @@ structure Wf (db : Db) : Prop where
       留まる、という`Db`の構造的な性質。 -/
   clockDominatesThreads : ∀ t ∈ db.threads, t.createdAt ≤ db.clock
   clockDominatesComments : ∀ c ∈ db.comments, c.createdAt ≤ db.clock
+  /-- `nextIdsFresh`のユーザー版・コメント版。**F08のレビュー指摘対応セッションで追加した。**
+      `userIdsDistinct`/`commentIdsDistinct`は`Wf`の他のフィールドだけからは
+      **保存を証明できない** ―― `register`が新規ユーザーに付ける`db.nextUserId`が
+      既存のどの`u.id`とも衝突しないことは、「採番カウンタが既存IDを上回る」という
+      性質を`Wf`自身が持っていなければ言えない（`createComment`と`nextCommentId`も同様）。
+      スレッドについては`nextIdsFresh`が最初からこの役割を果たしていた。
+      decision 0027 が `clockDominates*` を追加したのと同じ理由・同じ形の拡張で、
+      「`Wf`を帰納的（inductive）にするために必要な強化」。末尾に足してあるのは
+      既存の証明（フィールド順に依存する分解・構成）へ波及させないため。 -/
+  nextUserIdFresh : ∀ u ∈ db.users, u.id < db.nextUserId
+  nextCommentIdFresh : ∀ c ∈ db.comments, c.id < db.nextCommentId
 
 theorem wf_empty : Wf Db.empty := by
   constructor <;> simp [Db.empty]
+
+/-! ### 1.1 `Wf` の保存 ―― 最小連鎖 (register → login → createThread → createComment)
+
+**このセクションが解く問題**: `wf_empty` だけが `Wf` の住人を与えている状態では、
+`Wf db` と `t ∈ db.threads` を同時に要求する定理（`comment_bumps_lastUpdated`、C-15/AC09-4）は
+**非空虚に適用できない** ―― 唯一の `Wf` の住人 `Db.empty` は `threads = []` だからである。
+「証明は通るが適用できない」定理を残さないために、空DBから実際にスレッドのある状態へ
+到達する経路の各操作について `Wf` の保存を示し、末尾で具体例に適用してみせる
+（`comment_bumps_lastUpdated_is_applicable`、セクション8）。
+
+**どこまでやったか**: `register` / `login` / `createThread` / `createComment` の4操作。
+これは「`Db.empty` から出発してコメント付きスレッドのある状態へ至る」ための最短経路であり、
+上記の目的を果たすのに過不足ない範囲として選んだ（`Op` の全7操作 × `Wf` の全13 conjunct を
+埋めるフルセットは、この目的には不要なので**意図的にスコープ外**とした）。
+
+**何が残っているか**（後続セッションの宿題）:
+- `deleteThread`（F06）の保存補題。物理削除で `threads` から要素を除くため、
+  `commentThreadsExist`（孤児コメントが無い）の維持が実質的な論点になる
+  ―― `deleteThread` はコメント0件のときしか成功しないので真だが、
+  `ensure cs.isEmpty` から「除去対象スレッドを参照するコメントが存在しない」を
+  取り出す一手が要る。F06のRust実装が入るサイクルで書く。
+- `deleteComment`（F08）・`updateDisplayName`（F04）の保存補題。どちらも
+  `List.map` による既存要素の書き換えのみでIDを変えないため、
+  `runStep_preserves_commentTrackingInvariant` の同名分岐と同じ形で埋まるはずだが、
+  本セッションの目的（上記）には不要なため書いていない。
+- `Wf` を `runAll`（`Step` 列）へ持ち上げた一般形。上記2点が揃ってから。 -/
+
+/-- `Action.ensure`の2値を具体形に落とす。`if b then .. else ..`(`b : Bool`)は
+    `ite (b = true) .. ..`へ脱糖されるため、`htitle : nonEmptyText title = true`を
+    `simp`で代入しても`if True then .. else ..`止まりで完全には簡約されない
+    (`decide`系の後始末が要る)。あらかじめ`Bool`literal版の等式として用意しておき、
+    本体の証明では`nonEmptyText title`を`true`/`false`へ書き換えた直後にこれを
+    適用する2段構えにする。
+    (配置メモ: 元はセクション4に置いていたが、F08レビュー対応でこのセクション1.1が
+     先に使うようになったため前方へ移した。定義内容は変えていない。) -/
+theorem ensure_true_eq (e : Error) : Action.ensure true e = Action.pure () := by
+  unfold Action.ensure; simp
+
+theorem ensure_false_eq (e : Error) : Action.ensure false e = Action.fail e := by
+  unfold Action.ensure; simp
+
+/-- 末尾に1件足しても、その1件のキーが既存のどれとも違えば `Nodup` は保たれる。
+    `register`（`users`）・`createThread`（`threads`）・`createComment`（`comments`）の
+    3箇所が同じ議論を要求するため、`createComment` の分岐に埋まっていた形
+    （`runStep_preserves_commentTrackingInvariant`）を補題として括り出した。 -/
+theorem nodup_map_append_singleton {α β : Type} [DecidableEq β] (f : α → β) (l : List α) (a : α)
+    (h : (l.map f).Nodup) (hfresh : ∀ x ∈ l, f x ≠ f a) :
+    ((l ++ [a]).map f).Nodup := by
+  rw [List.map_append, List.map_singleton]
+  refine List.nodup_append.mpr ⟨h, List.nodup_cons.mpr ⟨List.not_mem_nil, List.nodup_nil⟩, ?_⟩
+  intro x hx y hy
+  rw [List.mem_map] at hx
+  obtain ⟨z, hz, hzx⟩ := hx
+  simp only [List.mem_singleton] at hy
+  rw [← hzx, hy]
+  exact hfresh z hz
+
+/-- F01: `register` は `Wf` を保つ。失敗する4分岐（形式・強度・表示名・重複）は
+    いずれも状態を書き換えないので `h` をそのまま返し、成功分岐だけが議論を要する。
+    `userIdsDistinct` に `nextUserIdFresh`、`uniqueIdsDistinct` に重複検査
+    （`findUserByUniqueId` が `none`）を使う。 -/
+theorem register_preserves_wf (u p d : String) (db : Db) (h : Wf db) :
+    Wf ((register u p d) db).2 := by
+  unfold register
+  cases hwf : Validation.uniqueIdWellFormed u with
+  | false =>
+    simp only [bind, Bind.bind, Pure.pure, Action.bind, Action.get, Action.pure,
+      Action.fail, hwf, ensure_false_eq]
+    exact h
+  | true =>
+    cases hweak : (Validation.passwordWeaknesses p).isEmpty with
+    | false =>
+      simp only [bind, Bind.bind, Pure.pure, Action.bind, Action.get, Action.pure,
+        Action.fail, hwf, hweak, ensure_true_eq, ensure_false_eq]
+      exact h
+    | true =>
+      cases hdn : Validation.displayNameFailure d with
+      | some v =>
+        simp only [bind, Bind.bind, Pure.pure, Action.bind, Action.get, Action.pure,
+          Action.fail, hwf, hweak, hdn, ensure_true_eq, Action.guardNone]
+        exact h
+      | none =>
+        cases hex : db.users.find? (·.uniqueId = u) with
+        | some usr =>
+          simp only [bind, Bind.bind, Pure.pure, Action.bind, Action.get, Action.pure,
+            Action.fail, hwf, hweak, hdn, hex, ensure_true_eq, Action.guardNone,
+            findUserByUniqueId]
+          exact h
+        | none =>
+          simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get,
+            Action.set, Action.pure, hwf, hweak, hdn, hex, ensure_true_eq,
+            Action.guardNone, findUserByUniqueId]
+          obtain ⟨hu, ht, hc, huq, hta, hca, hsa, hct, hfresh, hclt, hclc, huf, hcf⟩ := h
+          -- 新規ユーザーのidは`db.nextUserId`、uniqueIdは`u`（トリムするのは表示名だけ）。
+          have hidne : ∀ x ∈ db.users, x.id ≠ db.nextUserId := fun x hx =>
+            Nat.ne_of_lt (huf x hx)
+          have huqne : ∀ x ∈ db.users, x.uniqueId ≠ u := by
+            intro x hx
+            have := List.find?_eq_none.mp hex x hx
+            simpa using this
+          refine ⟨?_, ht, hc, ?_, ?_, ?_, ?_, hct, hfresh, hclt, hclc, ?_, hcf⟩
+          · exact nodup_map_append_singleton _ _ _ hu hidne
+          · exact nodup_map_append_singleton _ _ _ huq huqne
+          · intro t htmem
+            obtain ⟨v, hv, hvid⟩ := hta t htmem
+            exact ⟨v, List.mem_append_left _ hv, hvid⟩
+          · intro c hcmem
+            obtain ⟨v, hv, hvid⟩ := hca c hcmem
+            exact ⟨v, List.mem_append_left _ hv, hvid⟩
+          · intro s hsmem
+            obtain ⟨v, hv, hvid⟩ := hsa s hsmem
+            exact ⟨v, List.mem_append_left _ hv, hvid⟩
+          · intro x hx
+            rw [List.mem_append, List.mem_singleton] at hx
+            rcases hx with hx | hx
+            · exact Nat.lt_of_lt_of_le (huf x hx) (Nat.le_succ _)
+            · subst hx; exact Nat.lt_succ_self _
+
+/-- F02: `login` は `Wf` を保つ。`sessions` に1件足すだけなので、実質的な論点は
+    `sessionUsersExist`（新しいセッションのユーザーが実在すること）だけで、
+    それは認証に成功した `usr` 自身が `db.users` の要素であることから従う。 -/
+theorem login_preserves_wf (u p : String) (db : Db) (h : Wf db) :
+    Wf ((login u p) db).2 := by
+  unfold login
+  cases hu : db.users.find? (·.uniqueId = u) with
+  | none =>
+    simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+      Action.pure, Action.fail, hu]
+    exact h
+  | some usr =>
+    cases hpw : decide (usr.passwordHash = hashPassword p) with
+    | false =>
+      simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+        Action.pure, Action.fail, hu, hpw, ensure_false_eq]
+      exact h
+    | true =>
+      simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+        Action.pure, Action.fail, hu, hpw, ensure_true_eq]
+      obtain ⟨hus, ht, hc, huq, hta, hca, hsa, hct, hfresh, hclt, hclc, huf, hcf⟩ := h
+      have husr : usr ∈ db.users := List.mem_of_find?_eq_some hu
+      refine ⟨hus, ht, hc, huq, hta, hca, ?_, hct, hfresh, hclt, hclc, huf, hcf⟩
+      intro s hs
+      rw [List.mem_append, List.mem_singleton] at hs
+      rcases hs with hs | hs
+      · exact hsa s hs
+      · subst hs; exact ⟨usr, husr, rfl⟩
+
+/-- F05: `createThread` は `Wf` を保つ。論点は3つ ――
+    `threadIdsDistinct`（新規idは `nextIdsFresh` より既存と衝突しない）、
+    `threadAuthorsExist`（作成者は認証を通ったセッションのユーザーなので
+    `sessionUsersExist` で実在する）、`clockDominatesThreads`（`tick` が付ける
+    時刻は進めた後の `clock + 1` そのものなので等号で収まる）。 -/
+theorem createThread_preserves_wf (sid : SessionId) (title body : String) (db : Db)
+    (h : Wf db) : Wf ((createThread sid title body) db).2 := by
+  unfold createThread
+  cases hs : db.sessions.find? (·.id = sid) with
+  | none =>
+    simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+      Action.pure, Action.fail, Action.modify, tick, requireAuth, hs]
+    exact h
+  | some sess =>
+    cases htitle : Validation.nonEmptyText title with
+    | false =>
+      simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+        Action.pure, Action.fail, Action.modify, tick, requireAuth, hs, htitle,
+        ensure_false_eq]
+      exact h
+    | true =>
+      cases hbody : Validation.nonEmptyText body with
+      | false =>
+        simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+          Action.pure, Action.fail, Action.modify, tick, requireAuth, hs, htitle, hbody,
+          ensure_true_eq, ensure_false_eq]
+        exact h
+      | true =>
+        simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+          Action.pure, Action.fail, Action.modify, tick, requireAuth, hs, htitle, hbody,
+          ensure_true_eq]
+        obtain ⟨hus, ht, hc, huq, hta, hca, hsa, hct, hfresh, hclt, hclc, huf, hcf⟩ := h
+        have hsess : sess ∈ db.sessions := List.mem_of_find?_eq_some hs
+        have hauthor : ∃ v ∈ db.users, v.id = sess.userId := hsa sess hsess
+        have hidne : ∀ x ∈ db.threads, x.id ≠ db.nextThreadId := fun x hx =>
+          Nat.ne_of_lt (hfresh x hx)
+        refine ⟨hus, ?_, hc, huq, ?_, hca, hsa, ?_, ?_, ?_, ?_, huf, hcf⟩
+        · exact nodup_map_append_singleton _ _ _ ht hidne
+        · intro t htmem
+          rw [List.mem_append, List.mem_singleton] at htmem
+          rcases htmem with htmem | htmem
+          · exact hta t htmem
+          · subst htmem; exact hauthor
+        · intro c hcmem
+          obtain ⟨v, hv, hvid⟩ := hct c hcmem
+          exact ⟨v, List.mem_append_left _ hv, hvid⟩
+        · intro x hx
+          rw [List.mem_append, List.mem_singleton] at hx
+          rcases hx with hx | hx
+          · exact Nat.lt_of_lt_of_le (hfresh x hx) (Nat.le_succ _)
+          · subst hx; exact Nat.lt_succ_self _
+        · intro x hx
+          rw [List.mem_append, List.mem_singleton] at hx
+          rcases hx with hx | hx
+          · exact Nat.le_trans (hclt x hx) (Nat.le_succ _)
+          · subst hx; exact Nat.le_refl _
+        · intro x hx
+          exact Nat.le_trans (hclc x hx) (Nat.le_succ _)
+
+/-- F07: `createComment` は `Wf` を保つ。`createThread` と同じ骨格で、
+    加わる論点は `commentThreadsExist`（孤児コメントを作らない）―― これは
+    `findThread` が成功した、すなわち対象スレッドが実在することから従う。 -/
+theorem createComment_preserves_wf (sid : SessionId) (tid : ThreadId) (body : String) (db : Db)
+    (h : Wf db) : Wf ((createComment sid tid body) db).2 := by
+  unfold createComment
+  cases hs : db.sessions.find? (·.id = sid) with
+  | none =>
+    simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+      Action.pure, Action.fail, Action.modify, tick, requireAuth, findThread,
+      Action.liftOption, hs]
+    exact h
+  | some sess =>
+    cases hthread : db.threads.find? (·.id = tid) with
+    | none =>
+      simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+        Action.pure, Action.fail, Action.modify, tick, requireAuth, findThread,
+        Action.liftOption, hs, hthread]
+      exact h
+    | some thr =>
+      cases hbody : Validation.nonEmptyText body with
+      | false =>
+        simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+          Action.pure, Action.fail, Action.modify, tick, requireAuth, findThread,
+          Action.liftOption, hs, hthread, hbody, ensure_false_eq]
+        exact h
+      | true =>
+        simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+          Action.pure, Action.fail, Action.modify, tick, requireAuth, findThread,
+          Action.liftOption, hs, hthread, hbody, ensure_true_eq]
+        obtain ⟨hus, ht, hc, huq, hta, hca, hsa, hct, hfresh, hclt, hclc, huf, hcf⟩ := h
+        have hsess : sess ∈ db.sessions := List.mem_of_find?_eq_some hs
+        have hauthor : ∃ v ∈ db.users, v.id = sess.userId := hsa sess hsess
+        have hthrmem : thr ∈ db.threads := List.mem_of_find?_eq_some hthread
+        have hthrid : thr.id = tid := by simpa using List.find?_some hthread
+        have hidne : ∀ x ∈ db.comments, x.id ≠ db.nextCommentId := fun x hx =>
+          Nat.ne_of_lt (hcf x hx)
+        refine ⟨hus, ht, ?_, huq, hta, ?_, hsa, ?_, hfresh, ?_, ?_, huf, ?_⟩
+        · exact nodup_map_append_singleton _ _ _ hc hidne
+        · intro x hx
+          rw [List.mem_append, List.mem_singleton] at hx
+          rcases hx with hx | hx
+          · exact hca x hx
+          · subst hx; exact hauthor
+        · intro x hx
+          rw [List.mem_append, List.mem_singleton] at hx
+          rcases hx with hx | hx
+          · exact hct x hx
+          · subst hx; exact ⟨thr, hthrmem, hthrid⟩
+        · intro x hx
+          exact Nat.le_trans (hclt x hx) (Nat.le_succ _)
+        · intro x hx
+          rw [List.mem_append, List.mem_singleton] at hx
+          rcases hx with hx | hx
+          · exact Nat.le_trans (hclc x hx) (Nat.le_succ _)
+          · subst hx; exact Nat.le_refl _
+        · intro x hx
+          rw [List.mem_append, List.mem_singleton] at hx
+          rcases hx with hx | hx
+          · exact Nat.lt_of_lt_of_le (hcf x hx) (Nat.le_succ _)
+          · subst hx; exact Nat.lt_succ_self _
 
 /-! ### 2. 作用モナドの原子性（decision 0002）
 
@@ -531,18 +809,6 @@ theorem nodup_map_eq_of_mem {α β : Type} [DecidableEq β] {f : α → β} {l :
     · rcases List.mem_cons.mp hb with hb' | hb'
       · exfalso; apply hx; rw [hb'] at hab; rw [← hab]; exact List.mem_map_of_mem ha'
       · exact ih hxs ha' hb'
-
-/-- `Action.ensure`の2値を具体形に落とす。`if b then .. else ..`(`b : Bool`)は
-    `ite (b = true) .. ..`へ脱糖されるため、`htitle : nonEmptyText title = true`を
-    `simp`で代入しても`if True then .. else ..`止まりで完全には簡約されない
-    (`decide`系の後始末が要る)。あらかじめ`Bool`literal版の等式として用意しておき、
-    本体の証明では`nonEmptyText title`を`true`/`false`へ書き換えた直後にこれを
-    適用する2段構えにする。 -/
-theorem ensure_true_eq (e : Error) : Action.ensure true e = Action.pure () := by
-  unfold Action.ensure; simp
-
-theorem ensure_false_eq (e : Error) : Action.ensure false e = Action.fail e := by
-  unfold Action.ensure; simp
 
 /-- F05 / C-05 / AC05-4: `createThread`は、既に`db`に存在するどのスレッドの内容も
     書き換えない。追加(`append`)だけを行う操作なので、生き残ったIDは元の中身のまま。
@@ -1523,6 +1789,53 @@ theorem comment_bumps_lastUpdated (db : Db) (sid : SessionId) (tid : ThreadId) (
         have h3 : Nat.max M (db.clock + 1) ≤ Nat.max t.createdAt (Nat.max M (db.clock + 1)) :=
           Nat.le_max_right _ _
         exact Nat.lt_of_le_of_lt hbound (Nat.lt_of_lt_of_le h1 (Nat.le_trans h2 h3))
+
+/-! #### 8.1 `comment_bumps_lastUpdated` が非空虚に適用できることの確認
+
+セクション1.1（`Wf`の保存・最小連鎖）の目的地。`comment_bumps_lastUpdated`は
+`Wf db`と`t ∈ db.threads`を**同時に**要求するため、`Wf`の住人が`wf_empty`
+（`threads = []`）しか無い間は前提を満たす`db`が1つも作れず、証明済みでも
+**適用できない定理**だった（F08のレビュー指摘）。ここでは`Db.empty`から
+register → login → createThread と辿った具体的な状態を作り、
+(1) その状態が`Wf`であることを保存補題の**連鎖だけ**から導き、
+(2) そこにスレッドが実在することを示し、
+(3) 実際に`comment_bumps_lastUpdated`を適用する、
+の3点を機械的に確認する。`decide`/`rfl`で閉じる具体例（テスト定理）であり、
+一般性は無い ―― 一般形の主張は各保存補題そのものが担う。 -/
+
+/-- 空DBに利用者を1人登録した状態。 -/
+def chainDb1 : Db := ((register "testuser_01" "TestPassword123!" "テストユーザー01") Db.empty).2
+
+/-- さらにログインした状態（採番されるセッションIDは`0`）。 -/
+def chainDb2 : Db := ((login "testuser_01" "TestPassword123!") chainDb1).2
+
+/-- さらにスレッドを1件立てた状態（スレッドID`0`・`createdAt = 1`）。
+    `comment_bumps_lastUpdated`の前提を満たす最小の`db`。 -/
+def chainDb3 : Db := ((createThread 0 "スレッドタイトル" "スレッド本文") chainDb2).2
+
+/-- (1) 到達状態の整合性。**保存補題の連鎖だけ**で導いており、`decide`等による
+    具体計算に頼っていない（連鎖が実際に繋がっていることの確認になる）。 -/
+theorem chainDb3_wf : Wf chainDb3 :=
+  createThread_preserves_wf _ _ _ _
+    (login_preserves_wf _ _ _
+      (register_preserves_wf _ _ _ _ wf_empty))
+
+/-- (2) 到達状態にはスレッドが実在する（`Db.empty`と違い`threads`が空でない）。
+    これと`chainDb3_wf`が両立することが、`comment_bumps_lastUpdated`の
+    前提が非空虚であることの内実。 -/
+theorem chainDb3_has_thread :
+    (⟨0, 0, "スレッドタイトル", "スレッド本文", 1⟩ : Thread) ∈ chainDb3.threads := by
+  decide
+
+/-- (3) 実適用。`comment_bumps_lastUpdated`を上の具体例に適用し、コメント投稿が
+    実際に最終更新日時を進める（`1 < 2`）ことを得る。これが通ることで
+    「証明は通るが適用できない」状態が解消されたと言える。 -/
+theorem comment_bumps_lastUpdated_is_applicable :
+    lastUpdatedAt chainDb3 ⟨0, 0, "スレッドタイトル", "スレッド本文", 1⟩ <
+      lastUpdatedAt ((createComment 0 0 "コメント本文") chainDb3).2
+        ⟨0, 0, "スレッドタイトル", "スレッド本文", 1⟩ :=
+  comment_bumps_lastUpdated chainDb3 0 0 "コメント本文"
+    ⟨0, 0, "スレッドタイトル", "スレッド本文", 1⟩ chainDb3_has_thread rfl 0 chainDb3_wf rfl
 
 /-! ### 9. 検索 (F11 / AC11-2, AC11-4) -/
 
