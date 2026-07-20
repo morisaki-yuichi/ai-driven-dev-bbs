@@ -30,6 +30,35 @@ where
     .await
 }
 
+/// F04プロフィール編集(issue 04): ログイン中のユーザー自身の表示名を更新する。
+/// `user_id`はセッションから解決した認証済みユーザーのID(`db::sessions::AuthenticatedUser`)
+/// であり、他人のIDを渡す経路がそもそも存在しない(URLにIDを含まない、C-09のガード配下)。
+/// `formal/Bbs/Op.lean`の`updateDisplayName`(`users.map`による対象ユーザーのみの書き換え)に
+/// 対応する。
+///
+/// 戻り値は`rows_affected`を見て対象ユーザーが実在したかを表す(`true`=更新した、
+/// `false`=該当する`id`が無く何も書き換えなかった)。現状の唯一の呼び出し元
+/// (`web/profile.rs::submit`)は`require_auth`配下で`user_id`が必ず実在するため
+/// 常に`true`になり、戻り値を見ずに捨てている(ユーザーに見える振る舞いは変えない)。
+/// 将来別経路から呼ばれたときに「存在しないidでもOk(())」で沈黙しないためのガード。
+pub async fn update_display_name<'e, E>(
+    executor: E,
+    user_id: i64,
+    display_name: &str,
+) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let result = sqlx::query!(
+        "update users set display_name = $1 where id = $2",
+        display_name,
+        user_id,
+    )
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// PostgreSQLのunique_violation(23505)かどうかを判定する。
 pub fn is_unique_violation(error: &sqlx::Error) -> bool {
     matches!(
@@ -97,5 +126,45 @@ mod tests {
             .unwrap();
         let second = insert(&pool, "testuser_02", "hash", "同じ表示名").await;
         assert!(second.is_ok());
+    }
+
+    #[sqlx::test]
+    async fn update_display_name_changes_only_the_target_user(pool: PgPool) {
+        let target = insert(&pool, "testuser_01", "hash", "旧表示名")
+            .await
+            .unwrap();
+        insert(&pool, "testuser_02", "hash", "別のユーザー")
+            .await
+            .unwrap();
+
+        let updated_existing = update_display_name(&pool, target, "新表示名")
+            .await
+            .unwrap();
+        assert!(updated_existing);
+
+        let updated = find_by_unique_id(&pool, "testuser_01")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.display_name, "新表示名");
+
+        // 他のユーザーの表示名は変わらない。
+        let unaffected = find_by_unique_id(&pool, "testuser_02")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unaffected.display_name, "別のユーザー");
+    }
+
+    /// レビュー指摘: 存在しない`user_id`を渡してもDBは0行更新のまま`Ok`を返す
+    /// (`update users ... where id = $2`が単に何もマッチさせない)。呼び出し側が
+    /// `rows_affected`を見れば、対象が存在しなかったことをここで区別できる。
+    #[sqlx::test]
+    async fn update_display_name_returns_false_when_user_does_not_exist(pool: PgPool) {
+        let nonexistent_user_id = 999_999;
+        let updated = update_display_name(&pool, nonexistent_user_id, "新表示名")
+            .await
+            .unwrap();
+        assert!(!updated);
     }
 }

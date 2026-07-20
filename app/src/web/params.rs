@@ -141,6 +141,21 @@ impl HasCsrfToken for DeleteThreadForm {
     }
 }
 
+/// POST /profile/edit のフォーム(P06)。decision 0021によりCSRFトークンを必須で持つ。
+/// issue 04: 編集可能なのは表示名のみ(ユニークID・パスワードの変更フィールドは無い)。
+/// 表示名は機微情報ではないため`CreateThreadForm`と同様`#[derive(Debug)]`をそのまま使う。
+#[derive(Debug, Deserialize)]
+pub struct ProfileEditForm {
+    pub display_name: String,
+    pub csrf_token: String,
+}
+
+impl HasCsrfToken for ProfileEditForm {
+    fn csrf_token(&self) -> &str {
+        &self.csrf_token
+    }
+}
+
 /// クエリ文字列の値として安全な形にパーセントエンコードする
 /// (`&`・`=`・`%`・空白・非ASCIIなどをURL上意味を持たない`%XX`表現に変換)。
 ///
