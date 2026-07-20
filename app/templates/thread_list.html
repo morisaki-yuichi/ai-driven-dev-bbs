@@ -64,7 +64,7 @@
    「スレッドが1件も無い」「検索に一致するスレッドが無い」「一致するスレッドは
    あるが指定ページが範囲外」は別の状況なので、文言を分ける。同じ文言だと
    後2者で意味を誤読される。 #}
-{% if has_any_threads %}
+{% if has_matching_threads %}
 <p class="empty-state">このページには表示するものがありません。</p>
 {% else if is_searching %}
 <p class="empty-state">「{{ q }}」に一致するスレッドがありません。</p>

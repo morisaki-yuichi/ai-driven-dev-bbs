@@ -5,11 +5,14 @@
 //! 時刻はLeanの`Time := Nat`(単調な論理時刻の抽象)に倣い、`i64`のミリ秒エポック値
 //! として扱う。domain層に`chrono`/`time`crateへの依存を持ち込まないための選択。
 //!
-//! `db/threads.rs`等の呼び出し元(F09〜F13のハンドラ)はfoundation-plan.md §5の
-//! 範囲外(機能実装フェーズ)のため、それまでの間 `dead_code` を抑止する。
-//! `SortKey`はweb/params.rsが既に使用している。
-
-#![allow(dead_code)]
+//! `SortKey`・`contains_substr`・`escape_like_pattern`・`Hit`・`hit_location`・
+//! `render_comment_body`・`paginate`はF09/F11(`db/threads.rs`・`web/thread_list.rs`・
+//! `web/thread_detail.rs`)が使用している。`ThreadSortFields`/`sort_thread_fields`は
+//! F12(ソートUI、範囲外)向けの先行実装で、現状は`db/threads.rs::search`が
+//! `order by`をSQL側に固定で持つため未使用だが、この crate はバイナリと統合テストの
+//! 双方から参照される`lib`ターゲット(`src/lib.rs`)であり、`pub`項目はクレート外から
+//! 参照されうる公開APIとして扱われるため、未使用でも`dead_code`警告は出ない
+//! (実測確認済み、`#[allow(dead_code)]`は不要)。
 
 use crate::domain::model::DELETED_COMMENT_TEXT;
 

@@ -3,10 +3,7 @@
 //! `SortKey`自体はdomain/query.rs(Bbs.Query.SortKeyの対応先)が持ち、ここではHTTPの
 //! クエリ文字列をその型へ変換するパースのみを担う。
 //!
-//! 呼び出し元(F09/F11/F12のスレッド一覧ハンドラ)はfoundation-plan.md §5の範囲外
-//! (機能実装フェーズ)のため、それまでの間 `dead_code` を抑止する。
-
-#![allow(dead_code)]
+//! 呼び出し元はF09/F11(`web/thread_list.rs::show`)。
 
 use std::collections::HashMap;
 

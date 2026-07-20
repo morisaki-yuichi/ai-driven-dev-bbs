@@ -6,7 +6,8 @@
 //! ソート切替UI・他のソートキーはF12の範囲であり、ここでは実装しない
 //! ――`domain::query::SortKey`はF12全体を見越した先行実装だが、ここではDB側の
 //! `order by created_at desc, id desc`(decision 0009)がその`CreatedDesc`1本だけを
-//! 常に使う形に相当する。
+//! 常に使う形に相当する。`ListParams`は`sort`もパースするが、このハンドラは
+//! 値を検証せずページネーションリンクへ素通りさせるだけ(C-13、下記参照)。
 //!
 //! 一覧の取得方式は「全件取得 → `domain::query::paginate`(純粋関数)に渡す」。
 //! SQL側にLIMIT/OFFSETを足さない(functional coreの設計思想に整合させ、
@@ -66,10 +67,14 @@ struct ThreadListItem {
 struct ThreadListTemplate {
     current_user: Option<CurrentUser>,
     threads: Vec<ThreadListItem>,
-    /// 空リストの理由を区別するために要る。`threads`が空でも、スレッド自体は
-    /// 存在して指定ページが範囲外なだけ(decision 0013)という場合があり、
-    /// 「スレッドが0件」と同じ文言を出すと誤読される。
-    has_any_threads: bool,
+    /// 空リストの理由を区別するために要る。`threads`(現在のページ)が空でも、
+    /// 検索条件(`q`)に一致するスレッドが他のページに存在して指定ページが
+    /// 範囲外なだけ(decision 0013)という場合があり、「一致するスレッドが無い」と
+    /// 同じ文言を出すと誤読される。**F11実装後の実態**: `search`は空クエリでも
+    /// 全件表示(decision 0011)を返すため、この値は「(検索条件込みの)問い合わせが
+    /// 1件以上ヒットしたか」を表す ―― 検索していない通常の一覧でも常にこの値を
+    /// 経由する(空クエリは常に全件にヒットする特殊ケース)。
+    has_matching_threads: bool,
     /// C-12: 1ページ目では出さない。`{% if %}`で要素ごと消す
     /// (ui-ux-guidelines §6: 無効化してラベルを残すだけの実装は不可)。
     has_prev: bool,
@@ -102,8 +107,9 @@ struct ThreadListTemplate {
 /// `AuthenticatedUser`がリクエスト拡張に必ず存在する(C-09、AC09-1、AC11-1)。
 /// `Cache-Control: no-store`は`require_auth`側で一括付与される(C-11)。
 ///
-/// `ListParams::parse`はF11(検索)/F12(ソート)向けに`q`/`sort`も汎用にパースするが、
-/// このハンドラが読むのは`page`・`q`(`sort`はF12が範囲外なので未使用)。
+/// `ListParams::parse`が`q`/`sort`/`page`を一体でパースする。`sort`は現状
+/// `SortKey::CreatedDesc`固定(F12は範囲外、上記モジュールdocコメント参照)で、
+/// ページネーションリンクへ素通りさせるだけ(C-13)。`q`はF11検索に使う。
 pub async fn show(
     State(pool): State<PgPool>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -142,7 +148,8 @@ pub async fn show(
         .collect();
 
     // 全件取得 → 純粋関数`paginate`でページ分割(SQL側にLIMIT/OFFSETを足さない)。
-    let has_any_threads = !items.is_empty();
+    // decision 0011: 検索結果にもページネーションを適用する。
+    let has_matching_threads = !items.is_empty();
     let page = query::paginate(params.page, items);
 
     // F06: スレッド削除成功後のフラッシュ(`?thread_deleted=1`、値は問わずキーの
@@ -157,7 +164,7 @@ pub async fn show(
             csrf_token,
         }),
         threads: page.items,
-        has_any_threads,
+        has_matching_threads,
         has_prev: page.has_prev,
         prev_page: page.page_number.saturating_sub(1),
         has_next: page.has_next,

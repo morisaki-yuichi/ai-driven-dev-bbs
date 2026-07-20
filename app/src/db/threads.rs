@@ -157,17 +157,6 @@ where
     .await
 }
 
-/// P03スレッド一覧(F09)の読み取り。`search`の空クエリの特殊ケースへの委譲
-/// (decision 0011: `containsSubstr _ "" = true`なので空クエリは全件表示)。
-/// 呼び出し元(`web/thread_list.rs`)がF11対応でクエリ文字列を渡すようになった
-/// 段階で、この関数自体は不要になる見込み(暫定の橋渡し)。
-pub async fn list_all<'e, E>(executor: E) -> Result<Vec<SearchRow>, sqlx::Error>
-where
-    E: PgExecutor<'e>,
-{
-    search(executor, "").await
-}
-
 /// P04スレッド詳細(F10)に表示する1件。一覧・検索(`SearchRow`)と異なり、
 /// コメント数・最終更新日時は持たない(詳細画面はコメント自体を列挙するので不要、
 /// ユーザー承認済みのスコープ)。
@@ -355,7 +344,9 @@ mod tests {
             .await
             .unwrap();
 
-        let rows = list_all(&pool).await.unwrap();
+        // F09(一覧)は`search`に空クエリを渡す特殊ケースとして実装されている
+        // (decision 0011、`list_all`は廃止しF11実装時に`search`へ統一した)。
+        let rows = search(&pool, "").await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title, "AI駆動開発の未来について");
         assert_eq!(rows[0].body, "本文です");
@@ -363,12 +354,12 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn list_all_orders_by_created_at_desc(pool: PgPool) {
+    async fn search_empty_query_orders_by_created_at_desc(pool: PgPool) {
         let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
         let first = insert(&pool, uid, "最初のスレッド", "本文1").await.unwrap();
         let second = insert(&pool, uid, "次のスレッド", "本文2").await.unwrap();
 
-        let rows = list_all(&pool).await.unwrap();
+        let rows = search(&pool, "").await.unwrap();
         assert_eq!(rows.len(), 2);
         // decision 0009: 初期表示は作成日時降順 ＝ 新しい方が先。
         assert_eq!(rows[0].id, second);
@@ -376,8 +367,8 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn list_all_is_empty_for_empty_db(pool: PgPool) {
-        let rows = list_all(&pool).await.unwrap();
+    async fn search_empty_query_is_empty_for_empty_db(pool: PgPool) {
+        let rows = search(&pool, "").await.unwrap();
         assert!(rows.is_empty());
     }
 
@@ -425,57 +416,59 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn list_all_comment_count_is_zero_without_comments(pool: PgPool) {
+    async fn search_empty_query_comment_count_is_zero_without_comments(pool: PgPool) {
         let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
         insert(&pool, uid, "タイトル", "本文").await.unwrap();
 
-        let rows = list_all(&pool).await.unwrap();
+        let rows = search(&pool, "").await.unwrap();
         assert_eq!(rows[0].comment_count, 0);
     }
 
     /// D13/C-16(decision 0010): 一覧のコメント数は削除済みも数える。
     #[sqlx::test]
-    async fn list_all_comment_count_includes_deleted_comments(pool: PgPool) {
+    async fn search_empty_query_comment_count_includes_deleted_comments(pool: PgPool) {
         let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
         let tid = insert(&pool, uid, "タイトル", "本文").await.unwrap();
         insert_comment(&pool, tid, uid, "c1", far_future(), false).await;
         insert_comment(&pool, tid, uid, "c2", far_future(), true).await;
 
-        let rows = list_all(&pool).await.unwrap();
+        let rows = search(&pool, "").await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].comment_count, 2);
     }
 
     /// C-15/decision 0010: コメントが無ければ最終更新日時はスレッド作成日時と一致する。
     #[sqlx::test]
-    async fn list_all_last_updated_at_defaults_to_thread_created_at_without_comments(pool: PgPool) {
+    async fn search_empty_query_last_updated_at_defaults_to_thread_created_at_without_comments(
+        pool: PgPool,
+    ) {
         let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
         insert(&pool, uid, "タイトル", "本文").await.unwrap();
 
-        let rows = list_all(&pool).await.unwrap();
+        let rows = search(&pool, "").await.unwrap();
         assert_eq!(rows[0].last_updated_at, rows[0].created_at);
     }
 
     /// AC09-4/decision 0010: 最終更新日時はコメントの作成日時まで進む。
     #[sqlx::test]
-    async fn list_all_last_updated_at_reflects_latest_comment_time(pool: PgPool) {
+    async fn search_empty_query_last_updated_at_reflects_latest_comment_time(pool: PgPool) {
         let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
         let tid = insert(&pool, uid, "タイトル", "本文").await.unwrap();
         insert_comment(&pool, tid, uid, "c1", far_future(), false).await;
 
-        let rows = list_all(&pool).await.unwrap();
+        let rows = search(&pool, "").await.unwrap();
         assert_eq!(rows[0].last_updated_at, far_future());
     }
 
     /// decision 0010 決定2/3: 削除済みコメントの投稿時刻も最終更新日時の計算に含める
     /// (投稿された事実は消えない ＝ 唯一のコメントを削除しても値が過去に巻き戻らない)。
     #[sqlx::test]
-    async fn list_all_last_updated_at_still_reflects_a_deleted_comment(pool: PgPool) {
+    async fn search_empty_query_last_updated_at_still_reflects_a_deleted_comment(pool: PgPool) {
         let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
         let tid = insert(&pool, uid, "タイトル", "本文").await.unwrap();
         insert_comment(&pool, tid, uid, "c1", far_future(), true).await;
 
-        let rows = list_all(&pool).await.unwrap();
+        let rows = search(&pool, "").await.unwrap();
         assert_eq!(rows[0].last_updated_at, far_future());
     }
 
