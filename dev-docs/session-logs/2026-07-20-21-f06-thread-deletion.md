@@ -1,0 +1,47 @@
+# セッションログ: 2026-07-20 #21 F06 スレッド削除
+
+- フェーズ: 4（実装基盤構築後の機能実装フェーズ、F06）
+- 今回やったこと:
+  - 進行はオーケストレーション（S1 状態復元 → G1 → S2 証明+TDD実装 → S3 レビュー → G3 裁定 → 裁定反映）で行った。ブランチは `main`（`3c2ef00`）から分岐した `feat/thread-deletion`（当初 `feat/thread-deletion-lean` として作成し、命名規約に合わせて後でリネーム）。
+  - **S1（状態復元）**: `docs/product/issues/06_thread_deletion.md` の実装を承認済みスコープで依頼された。`formal/Bbs/Invariant.lean`・`Bbs/Op.lean`・`app/src/db/comments.rs`・`app/src/web/thread_detail.rs`（F08実装）・`app/src/db/threads.rs`・`app/src/web/mod.rs`・`app/src/web/params.rs`・`app/src/web/error.rs`・`app/templates/thread_detail.html`・`app/tests/comment_deletion_test.rs`・decision 0014（物理削除）・decision 0024（クエリパラメータ方式フラッシュ）・decision 0030（削除確認ダイアログなし）・シナリオ02を読み、実装方針を確認した。`Op.lean`の`deleteThread`は既にF06向けの定義が完成していた（作成者検査 → `commentsOf`/空検査 → 物理削除）。調査で判明していた実装上の注意として、`not exists`のサブクエリを`deleted_at`で絞ってはならない（削除済みコメントの存在だけでも削除を阻止する必要がある）こと、所有者チェックを原子文に含めない（所有権は譲渡されないためレース対象ではなく、コメント有無だけがレース対象という非対称がある）ことを申し送った。
+  - **G1（承認）**: ユーザーが承認したスコープは次のとおり。`deleteThread_atomic`・`deleteThread_needs_owner`・`thread_immutable`の本体・`deleteThread`のWf保存補題を証明する／AC06-2のLean作業は不要（F08でrestateして証明済み）／削除確認ダイアログはdecision 0030に倣い設けない（新規decision不要）／削除ボタンUI（F10から切り出されていたもの）を実装する。
+  - **S2（証明+TDD実装）**: Lean形式化はバックグラウンドの汎用サブエージェントに委譲し、並行してRust実装を進めた（両者は`formal/`と`app/`で完全に別ファイルを扱うため衝突なし）。成果を`lake build`で自分でも再検証した。G1承認スコープの各項目について実施したかを明示的に報告した（前サイクルの取りこぼしを受けて進行役がプロンプトに報告義務を追加していた）。
+    - `deleteThread_atomic`（decision 0002、原子性）を`deleteComment_atomic`と同型の`bind_noWriteOnError`連鎖で証明した。新設の`commentsOf_noWriteOnSuccess`補題を要した。
+    - `deleteThread_needs_owner`を`deleteThread_blocked_by_any_comment`の姉妹補題として証明した（所有者検査の失敗分岐、`ensure_false_eq`）。
+    - `thread_immutable`（C-05、`Step`列全体にわたる一般形）を`ThreadTrackingInvariant`構造体（`nodup`/`fresh`/`tidBound`/`eqOfSameId`の4フィールド。`comment_body_immutable`の`CommentTrackingInvariant`と同型）を`Step`8種すべてで保存されることを示し`runAll`へ帰納法で持ち上げる構成で証明した。`comment_body_immutable`の構成をそのまま流用した。当初の`matches`という命名はLean 4の予約構文と衝突したため`eqOfSameId`に変更した。既存の`hnodup`/`hfresh`という局所仮定だけで真であることを確認でき、新しい反例は見つからなかった。
+    - `deleteThread`のWf保存補題（`deleteThread_preserves_wf`）を新設した。`commentThreadsExist`（孤児コメント不在）の維持が論点で、`ensure cs.isEmpty`から「削除対象スレッドを参照するコメントが存在しない」を導き、削除後も既存コメントの参照先が生き残ることを示した。
+    - `lake build`は成功、S2完了時点で新規に導入した`sorry`は無し（残る6件`sorry`は全てF06スコープ外の既存項目——`displayName_propagates`・`sorted_by_commentCount`・`createdAsc_head_is_oldest`・`search_finds_body`・`no_deleted_hit`・`hit_is_reachable`）。シナリオ煙試験（17/17・15/15・9/9等）も全てpassのまま。
+    - `app/src/db/threads.rs`: `ThreadDetailRow`に`author_id`を追加（認可判定用）。`delete`（`delete from threads where id = $1 and not exists (select 1 from comments where comments.thread_id = $1)` + `rows_affected`判定、`db/comments.rs::delete`と同型のTOCTOU対策。所有者チェックはこの1文に含めない）を新設。単体テスト7件を追加（コメント0件で削除できる、未削除コメントがあれば削除不可、**削除済みコメントだけでも削除不可**（AC06-2の回帰）、存在しないIDはfalse、別トランザクションが割り込んでコメントを挿入した場合にdeleteが正しく拒否する並行性テスト）。
+    - `app/src/web/params.rs`: `DeleteThreadForm`（CSRFトークンのみ、`DeleteCommentForm`と同型）を追加。
+    - `app/src/web/mod.rs`: `POST /threads/{id}/delete`を`require_auth`配下に登録。
+    - `app/src/web/thread_detail.rs`: `ThreadDeleteNotice`（forbidden/has_comments/通知なしのフラッシュ通知、decision 0024と同じクエリパラメータ方式）を新設。`ThreadDetailTemplate`に`can_delete_thread`・`thread_delete_error_message`を追加。`delete_thread`ハンドラを追加（`Op.lean`の`deleteThread`と同じ順序: requireAuth→find_by_id(404)→作成者検査(forbidden)→`db::threads::delete`(has_comments判定)→物理削除。成功時は`/`へ、失敗時は`/threads/{id}`へフラッシュ付きリダイレクト）。`render_detail`の引数増加をclippy指摘（too_many_arguments）で`DeleteNotices`構造体へ整理した（`CommentFormState`と同じ理由）。
+    - `app/src/web/thread_list.rs`・`app/templates/thread_list.html`: `?thread_deleted=1`のフラッシュ成功通知（「スレッドを削除しました。」）を追加。削除成功後は詳細画面(404になる)ではなく一覧画面に戻るため(シナリオ02)。
+    - `app/templates/thread_detail.html`: 削除ボタン(`can_delete_thread`が真のときのみ、非表示に加えてサーバ側でも検査)、`window.confirm`不使用(D18/decision 0030と同じ裁定をスレッド削除に適用)。ボタン文言は「スレッドを削除する」(シナリオ02の記述に合わせた)。
+    - `app/tests/thread_deletion_test.rs`を新設し、AC06-1〜AC06-4・C-06(削除済みコメントも数える)・C-09・C-10・CSRF・削除ボタンの表示可否・confirm不使用を結合テスト12件でカバーした（この時点。S3の裁定反映で1件のテスト内容を修正、後述）。
+    - `cargo sqlx prepare -- --all-targets`実行、`.sqlx/`を更新(`SQLX_OFFLINE=true cargo check --all-targets`で整合を確認)。`cargo test`(全133件)・`cargo clippy --all-targets`・`cargo fmt --check`が全て緑/クリーンであることを確認。
+    - `/verify`: プロジェクト固有の`.claude/skills/verify/SKILL.md`に従い、ホストの`cargo run`+Postgres実接続+curlで一連のフローを実測した。コメント0件の自分のスレッドの削除ボタン表示→削除→`/?thread_deleted=1`へリダイレクト→一覧から消失→詳細404、コメント付きスレッドは削除ボタン非表示かつ直接POSTしても`has_comments`で拒否、他人のスレッドは削除ボタン非表示かつ直接POSTしても`forbidden`で拒否、未ログインは`/login`へリダイレクト、CSRF不一致は403、存在しない/非数値IDは404、を実レスポンス・DB状態で確認した。
+  - **S3（レビュー）**: 重大2件を検出・修正した。
+    1. **F08で確立したTOCTOU対策パターンがF06には移植できていなかった。** `delete from threads where id=$1 and not exists (select 1 from comments ...)` はREAD COMMITTEDでは`not exists`サブクエリが文開始時点のスナップショットで評価されるため機能しない。レビューが実際にレースを再現して実測した経路: サブクエリが「0件」と判定 → `threads`行のロック取得で待たされる（相手がFKの`for key share`を保持） → 相手のコミット後に削除が実行される → 文末のFK検査が`23503`を投げ画面には500が出る。PostgreSQLの`EvalPlanQual`による条件再評価は更新対象の行自身にしか働かず、別テーブルを見るサブクエリには効かない。修正は`find_by_id_for_update`（`for update of threads`）と、コメント作成側の`find_by_id_for_share`による直列化。**重要な副次発見として、F07のサイクルで入れた「スレッド存在確認をトランザクション内に移す」という緩和も、素の`select`が行をロックしないため実際には無効だったことが判明した。**
+    2. **`displayName_propagates`が偽の言明のまま`sorry`で残っていた。** 結論が`authorDisplayName = some n`（トリム前の生入力）だったが、`updateDisplayName`はdecision 0004に従い`Validation.trim n`を保存する。反例`n = " A "`をLeanの`decide`で形式的に反証し、トリム後の形が真であることも確認して言明を修正し`sorry`を維持した。これで「仮定不足または誤りで偽だった言明」は通算6件目になる。
+  - **S3の検証**: `thread_immutable`は`#print axioms`で`sorryAx`不在を確認。`ThreadTrackingInvariant`は`Op.lean`への変異テスト3種（`createThread`が既存スレッドを書き換える／`deleteThread`が生存スレッドを書き換える／コメント0件ガードの削除）すべてで検出され、空虚な不変条件でないことが実証された。`Op.lean`はmd5一致で復元済み。`comments.thread_id`は`on delete`指定なし（`no action`）でカスケードしないため孤児は生じず、DB自身が拒否する二重の防御になっている。`not exists`が`deleted_at`で絞られていないことを実SQLで確認し、削除済みコメントのみのスレッドが削除できないことも実データで検証された。所有者判定はサーバ側でトランザクション内の`author_id`比較でボタン非表示に依存せず、IDORの余地なし。リダイレクトはi64パース済みの値のみを埋めるためオープンリダイレクトなし。HIGH/MEDIUMの脆弱性は検出されなかった。
+  - S3は「CLAUDE.mdの`cargo sqlx prepare`を`--all-targets`付きに改めるべき」とも指摘したが、進行役が実ファイルを確認したところF05のサイクルで既に修正済み（50行目・110行目とも`--all-targets`付き）であり、対応不要だった。レビューワーカー自身が素の`prepare`を実行して踏んだ経験からの推測だったとみられる。
+  - **G3（裁定）**: ユーザーが裁定し、行ロック方針をdecision 0031として記録した（条件が更新対象行自身に付く場合にのみ条件付き1文が成立すること、条件が別テーブルにある場合は明示的な行ロックで直列化すること、トランザクション内に置くことと行をロックすることは別であるという副次事実を含む）。確認ダイアログ不使用のテストの検査対象を一覧ページから詳細ページに修正する裁定も出た（削除フォームの存在を先にassertしてからconfirm(の不在を確認する形にし、対象が消えて空振りするのを防いだ）。
+  - **裁定反映**: `dev-docs/decisions/0031-thread-deletion-row-locking.md`を起票し`dev-docs/decisions/README.md`の索引（連番・`decided_by = ai+user`索引の補足文）を更新した。`app/src/db/threads.rs`に`find_by_id_for_update`・`find_by_id_for_share`を追加し、削除ハンドラ・コメント作成ハンドラをこれらのロック付き読み取り経由に切り替えた。`formal/Bbs/Invariant.lean`の`displayName_propagates`の言明を真の形（`some (Validation.trim n)`）へ修正した（`sorry`は維持）。`app/tests/thread_deletion_test.rs`の`delete_form_does_not_use_a_native_confirm_dialog`を、検査対象を`/`（一覧）から`/threads/{id}`（詳細）に修正し、削除フォームの存在を先にassertする形へ書き換えた。`cargo sqlx prepare -- --all-targets`を再実行し`.sqlx/`を更新、`cargo test`・`cargo clippy --all-targets`・`cargo fmt --check`を再確認して全て緑/クリーンであることを確認した。`lake build`を再実行し新規`sorry`ゼロ（`displayName_propagates`の言明変更後も証明部分は変更なしで成功）を確認した。
+- 決めたこと（関連 decision 番号があれば併記）:
+  - スレッド削除の確認ダイアログは設けない（コメント削除のD18/decision 0030と同じ裁定をスレッド削除にも適用。ユーザーが事前承認済みのスコープであり新規decisionは起票していない）。G3でも見送りが再確認された（物理削除の非対称はコード内のWhyコメントに記載）。
+  - 削除成功後は`/threads/{id}`(404になる)ではなく`/`(一覧)へ`?thread_deleted=1`付きでリダイレクトする(シナリオ02の記述に従った実装判断、明示のdecisionは起票していない)。
+  - Forbidden・ThreadHasCommentsは`web/error.rs`の一律400フォールバックに頼らず、`delete_thread`ハンドラが明示的に捕捉して`/threads/{id}`へのフラッシュ付きリダイレクトを返す方式にした(F08の`delete_comment`と同じ方針の踏襲、decision化はしていない実装判断)。
+  - 所有者チェックとコメント有無チェックの非対称(所有者チェックはWeb層で行い原子文に含めない、コメント有無だけを`not exists`で原子的に判定する)は、進行役から事前に指示された設計方針をそのまま採用した(S1調査結果、`db/comments.rs`のdocコメントに申し送り済みの内容)。新規decisionは起票していない。
+  - **削除・更新の可否が別テーブルの状態に依存する場合、F08の「条件付き1文＋rows_affected」パターンは移植できず、明示的な行ロック（`for update`/`for share`）による直列化が必要（decision 0031、major、ai+user、S3レビューでの実測に基づきG3で裁定）**。F06のスレッド削除は`find_by_id_for_update`、F07のコメント作成は`find_by_id_for_share`で対になるロックを取る。
+- 次にやること:
+  - `/code-review`・`/security-review`（S3で既に重大2件のレビューを実施・反映済みだが、通常のフロー上の`/code-review`・`/security-review`は本サイクルでは別途実行していない。次のステップで必要に応じて実行）。
+  - `git add`・`git commit`・PR作成はユーザー承認後に別途行う（本サイクルでは未実施、指示どおり）。
+  - `dev-docs/decisions/README.md`の`decided_by = ai`索引の棚卸しは、0031が起票時点から`ai+user`であるため対象外。
+- 未解決事項:
+  - `displayName_propagates`は言明を真の形に直したうえで`sorry`のままであり、F04で証明する。
+  - `Wf`保存補題の残件: `deleteComment`(F08)・`updateDisplayName`(F04)の保存補題、および`Wf`を`runAll`(`Step`列)へ持ち上げた一般形は、G1で明示的にスコープ外とされ今回も着手していない。
+  - `search_finds_body`・`no_deleted_hit`・`hit_is_reachable`はF11で拾う。`sorted_by_commentCount`・`createdAsc_head_is_oldest`はF12で拾う。
+  - ページリンクが`q`・`sort`を落とす件はF11・F12で拾う。
+  - 必須フィールド欠落POSTが403でなく422になる件（未解決のまま持ち越し）。
+  - 未ログインで未知URLを踏んだ応答には`no-store`が付かない件（未解決のまま持ち越し）。
+  - `omega`が`abbrev`型のID(`CommentId`等)を認識できない制約(F08セッションで判明)への対処(具体的なNat補題を直接使う回避)は本セッションでも踏襲したが、原因そのものは未調査のまま。
