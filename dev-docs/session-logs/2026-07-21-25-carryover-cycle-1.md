@@ -1,0 +1,38 @@
+# セッションログ: 2026-07-21 #25 持ち越し事項の専用サイクル(1)
+
+- フェーズ: 4（機能実装）
+- 今回やったこと:
+  - 全12機能(F01〜F12)の実装完了後、持ち越し事項を片付ける専用サイクル(機能実装ではない)を`carryover-cycle-1`ブランチ(分岐元は`main`の`76405ab`)で実施した。オーケストレーション(S1 棚卸し→G1→S2 実装→S3 レビュー→G3 裁定→裁定反映)で進めた。
+  - **S1(棚卸し)**: 3件を扱った。(1) 必須フィールド欠落POSTが403でなく422になる件(F05から6回連続で持ち越し)、(2) 未ログインで未知URLを踏んだ応答に`no-store`が付かない件、(3)「他に影響を与えていないこと」を確認するテストの横断的な欠落。
+  - **S1最重要の発見**: (3)の調査で、F06スレッド削除・F08コメント削除の削除SQLに「対象限定を壊す変異」を検出するテストが、DB単体・結合のどちらにも存在しないと判明した。**過去のセッションログにあるF06・F08の「変異テスト実施済み」は`formal/Bbs/Op.lean`(形式モデル)への変異であり、Rustの実SQLへの変異ではなかった**(進行役の認識の取り違えが判明した)。F06は物理削除(decision 0014)なので検出漏れの実害は「全スレッド消失」という最大級のもので、F04で見つかった穴より優先度が高いという逆転が起きていた。
+  - **G1(ユーザー承認)**: (3)のF06・F08の穴埋めを最優先とする／(2)の`no-store`を今回修正する／(1)はdecision化して受容し6回の持ち越しを打ち切る、というスコープが承認された。
+  - **S2(実装)**:
+    - `app/src/db/threads.rs`のテストに`delete_does_not_remove_another_thread`・`delete_does_not_remove_comments_belonging_to_another_thread`を追加。犠牲オブジェクト(削除対象と無関係な2件目のスレッド、および無関係なスレッドに紐づくコメント)が削除後も生存することを確認する。
+    - `app/src/db/comments.rs`のテストに`delete_does_not_affect_another_comment_in_the_same_thread`・`delete_does_not_affect_a_comment_in_another_thread`を追加。同一スレッド内の別コメント・別スレッドのコメントの両方が巻き添えで削除済みにならないことを確認する。
+    - `app/tests/thread_deletion_test.rs`・`app/tests/comment_deletion_test.rs`(結合層)にも同型のテストを追加した(`deleting_a_thread_does_not_delete_another_thread`・`deleting_a_thread_does_not_delete_comments_of_another_thread`・`deleting_a_comment_does_not_affect_another_comment_in_the_same_thread`・`deleting_a_comment_does_not_affect_a_comment_in_another_thread`)。
+    - **変異検出を実際に確認した**: `db/threads.rs::delete`の`where`を`(元の条件) or true`(全件削除)に、`db/comments.rs::delete`の`where`を同様に壊す変異を入れ、DB単体・結合の両方で追加したテストが実際に赤くなることを確認してから元に戻した(`cargo sqlx prepare`不要な文字列変更のみだったため、DATABASE_URL経由のオンラインチェックで動作)。復元後は`git diff`で`delete`関数のSQL本体に差分が無いことを確認した。
+    - 未ログイン時の`no-store`欠落を修正。`app/src/web/middleware.rs::reflect_auth_on_error_page`で、`AuthAwareErrorPage`マーカーを確認した直後に`Cache-Control: no-store`を一律付与するよう挿入位置を早めた(以前はセッション未解決時の早期returnより後にあり、未ログインで未知URLを踏んだ404にだけ付与が漏れていた)。回帰テスト`unknown_url_404_without_login_has_no_store`を`app/tests/thread_detail_test.rs`に追加(二重付与でないことも確認)。
+    - 422の件をdecisionとして記録し持ち越しを打ち切り。必須フィールド欠落POSTが403でなく422になる件について、コードは変更せず受容する判断をdecision 0036(`dev-docs/decisions/0036-csrf-form-missing-fields-422.md`)として記録した。根本原因(`CsrfForm::from_request`がボディ全体のデシリアライズ成功後にしかCSRF検証を行わない)・decision 0021決定6は満たされていること・実害が薄い理由(same_origin_guardが先に効く・agent-browser経由では到達しにくい)・検討したが採らなかった選択肢(2段構成のCsrfForm、AppError経由の専用ページ)を記録した。
+    - `cargo test`(全15テストバイナリ・138 lib + 各結合テスト、全て緑)・`cargo clippy --all-targets`(警告なし)・`cargo fmt`・`lake build`(`sorry`ゼロ、警告は既存の未使用simp引数のみで今回変更と無関係)を確認した。SQLは最終的に変更していないため`.sqlx/`の更新は不要。
+    - `/verify`でホスト`cargo run`のアプリを実際に起動し、HTTP経由で3項目すべてを確認した: (1)無関係なスレッド・無関係なコメントがスレッド削除・コメント削除の巻き添えにならないこと(実際に2スレッド・2コメントを作成し削除操作後の生存を確認)、(2)未ログインで未知URLへのGETに`cache-control: no-store`が付くこと(ログイン中の経路との二重付与が無いことも確認)。
+  - **S3(レビュー)**: 重大な指摘は0件。
+    - レビューワーカーが独立に別の変異3種を試し、いずれも検出されることを確認した: `threads::delete`の`where`を「隣接レコードも巻き込む」形にする変異(新規テストのみが検出)、`comments::delete`から`deleted_at is null`条件を落とす変異(既存テストが検出)、`comments::delete`をスレッド全体(`thread_id`単位)に広げる変異(新規テストのみが両層で検出)。3種目は新規テストが固有の穴を塞いだことの証拠になった。
+    - **decision 0036の根拠を検証し、1つが過度に一般的だと判明した**: 「same_origin_guardがCsrfFormより外側」は正確で、しかもOrigin/Refererが両方無い場合もfail-closedで403にすることが実測で確認され、主張より強かった。「decision 0021決定6は満たされる」も正確。しかし「`<input>`が存在する限りキーは送られる」はチェックボックス・ラジオ・`disabled`・`name`無しでは偽で、現在成立しているのはテンプレートにそれらが偶然無いからにすぎず、CSRF保護フォームにチェックボックスを1つ足すだけで受容の根拠が黙って崩れる状態だった。
+    - S3のプロセス上の自己申告: 変異の復元時に`git checkout`を使い未コミットの新規テストを一度消してしまったが、即座に検知して差分から再構成し、行数の一致で同一性を確認したのち、以降はバックアップファイル方式に切り替えた。
+  - **G3(ユーザー裁定)と裁定反映**:
+    - decision 0036の「`<input>`」の根拠を「現行テンプレートにチェックボックス等が無いため成立している」という限定付きに直し、再検討条件に「CSRF保護フォームへのチェックボックス等の追加」と「Content-Typeがurlencoded以外になる変更(ファイルアップロード導入)」を追記した(decisionの結論=受容は変えない)。
+    - `require_auth`配下の404(`/threads/999999`)に`no-store`がちょうど1個付くことの回帰テスト`nonexistent_thread_id_under_require_auth_404_has_no_store_exactly_once`を`app/tests/thread_detail_test.rs`に追加し、`middleware.rs`のモジュールdocの「`no-store`を1箇所に集約」という記述を、実態(`require_auth`・`reflect_auth_on_error_page`に加え`register.rs`・`login.rs`・`profile.rs`・`thread_create.rs`でも個別付与、計5箇所。`require_auth`配下では重複するが`insert`で上書きのため実害なし)に合わせて書き換えた。
+    - FK制約違反のpanicで検出していたテストを、実態(FK制約により別スレッドのコメントが巻き添え削除されないことを検証している)に合わせて`fk_constraint_prevents_thread_deletion_from_removing_comments_of_another_thread`に改名しコメントを正確にした。WHERE スコープをスレッド粒度で真に検証しているのは兄弟テスト`deleting_a_thread_does_not_delete_another_thread`(コメント無しの犠牲スレッド)であることも確認された。
+    - 裁定反映後も`cargo test`・`cargo clippy --all-targets`・`cargo fmt`が緑であることを確認した。
+- 決めたこと（関連 decision 番号があれば併記）:
+  - 必須フィールド欠落POSTが403でなく422になる件は、コード変更なしで受容する（decision 0036, importance=minor, decided_by=ai+user）。S3のレビューを受けてG3で、根拠の一部(「`<input>`が存在する限りキーは送られる」)を現行テンプレート限定の主張に修正し、再検討条件を2件追記した。decisionの結論(受容)自体は変えていない。
+- 次にやること:
+  - 空DBからシナリオ01〜05の通し確認(評価者経路`docker compose up`での最終検証。機能横断の通し確認)。今回で持ち越し事項は解消したため、次はこれに進む。
+  - `carryover-cycle-1`ブランチのcommit・push(本セッションでは指示によりcommitを行っていない。ユーザー承認後に別途実施)。
+- 未解決事項:
+  - Wf保存補題の残件(`updateDisplayName`・`deleteComment`の保存補題と`runAll`への一般形)。F04でスコープ外として見送り済み、今回も対象外。
+  - `not_found()`のレンダリング失敗経路にだけ`no-store`が付かない件(既存の非対称、低頻度)。G3で見送りが確定した。
+  - 結合テストの`login`ヘルパを`tests/common/mod.rs`へ集約すること(約10ファイルで重複している)。G3で見送りが確定した。
+  - `middleware`の`no-store`付与を実際に1箇所へ集約すること(今回はモジュールdocを実態に合わせる正確化のみ行い、実装の集約自体は見送った)。G3で見送りが確定した。
+  - Leanの証明はRustを機械的に拘束しないため、モデルと実装の対応は人手のレビューで維持されている(構造的な制約。今回のサイクルの発端であるF06・F08の変異テスト欠落も、この対応がずれた具体例)。
+  - 空DBからのシナリオ01〜05通し確認は未実施(上記「次にやること」参照)。
