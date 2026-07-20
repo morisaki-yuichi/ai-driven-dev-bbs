@@ -113,11 +113,15 @@ impl ListParams {
     pub fn parse(raw: &HashMap<String, String>) -> Self {
         let q = raw.get("q").cloned().unwrap_or_default();
         let sort = SortKey::parse(raw.get("sort").map(String::as_str));
+        // Why-not: `parse::<i64>()`で受けてから`as u32`で落とさない。`as`は
+        // 黙って下位32bitに切り詰めるため、`?page=4294967296`(2^32)が`0`に化けて
+        // `n >= 1`の検査を通り抜け、この構造体の「1始まり」という不変条件を破る
+        // (`page = 0`のまま`paginate`へ渡る)。`u32`で直接パースすれば、u32に
+        // 収まらない入力は`None`になり、他の不正値と同じく1ページ目へ丸まる。
         let page = raw
             .get("page")
-            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(|s| s.parse::<u32>().ok())
             .filter(|&n| n >= 1)
-            .map(|n| n as u32)
             .unwrap_or(1);
         Self { q, sort, page }
     }
@@ -191,6 +195,25 @@ mod tests {
     #[test]
     fn page_zero_negative_or_non_numeric_clamps_to_1() {
         for page in ["0", "-1", "abc"] {
+            let p = ListParams::parse(&params(&[("page", page)]));
+            assert_eq!(p.page, 1, "page={page} should clamp to 1");
+        }
+    }
+
+    /// u32の上限ちょうどは有効な値としてそのまま通す(丸めの対象ではない)。
+    /// `web/thread_list.rs`の`next_page`が`saturating_add`である必要はここに由来する。
+    #[test]
+    fn page_at_u32_max_is_kept_as_is() {
+        let p = ListParams::parse(&params(&[("page", "4294967295")]));
+        assert_eq!(p.page, u32::MAX);
+    }
+
+    /// 回帰: u32に収まらない値は「不正値」として1ページ目に丸まる。
+    /// `i64`で受けてから`as u32`していた頃は下位32bitに切り詰められ、
+    /// 2^32が`page = 0`(1始まりの不変条件違反)、2^32+1が黙って1ページ目になっていた。
+    #[test]
+    fn page_beyond_u32_range_clamps_to_1() {
+        for page in ["4294967296", "4294967297", "99999999999999999999"] {
             let p = ListParams::parse(&params(&[("page", page)]));
             assert_eq!(p.page, 1, "page={page} should clamp to 1");
         }
