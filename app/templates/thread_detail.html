@@ -7,12 +7,18 @@
 
 {# F08: コメント削除結果のフラッシュ通知(decision 0024と同じクエリパラメータ方式)。
    login.htmlと同じくaria-liveを通知の種別で切り替える(成功はpolite、失敗はassertive)。
-   success/errorが同時にSomeになることは無い(CommentDeleteNotice::messagesが保証)。 #}
+   F06: スレッド削除の失敗通知(thread_delete_error_message)もここに合流させる ――
+   同一ページ読み込みでコメント削除通知とスレッド削除失敗通知が同時にSomeになることは
+   無い(それぞれ別の操作が別のクエリパラメータでリダイレクトするため)。成功時は
+   このページ自体に戻らない(`/`へ遷移する)ので、スレッド削除の成功メッセージは無い。 #}
 <div class="message-area"{% if delete_success_message.is_some() %} aria-live="polite"{% else %} role="alert" aria-live="assertive"{% endif %}>
     {% if let Some(msg) = delete_success_message %}
     <p class="message message-success">{{ msg }}</p>
     {% endif %}
     {% if let Some(msg) = delete_error_message %}
+    <p class="message message-error">{{ msg }}</p>
+    {% endif %}
+    {% if let Some(msg) = thread_delete_error_message %}
     <p class="message message-error">{{ msg }}</p>
     {% endif %}
 </div>
@@ -23,8 +29,22 @@
     <p>{{ author_display_name }} さん・{{ created_at }}</p>
 </article>
 
-{# F06(スレッド削除)の「削除」ボタンはここに置かない
-   (ユーザー承認済みのスコープ ―― issue 10 のACのうちこの1点は今回実装しない)。 #}
+{# F06/AC06-1〜AC06-3/ui-ux-guidelines §1: 自分の・コメント0件(削除済み込み)の
+   スレッドにだけ削除ボタンを出す(can_delete_thread が両方を判定済み)。他人の
+   スレッド・コメントが1件以上あるスレッドには出さない(操作不可は非表示にする)。
+   非表示に依存せず、直接POSTもサーバ側(delete_thread)で弾く。
+   D18/decision 0030と同じ裁定: 確認なしで即削除する(window.confirmは使わない)。
+   物理削除でコメント削除より取り返しがつかない非対称があるが、H-02
+   (agent-browser操作性)とdecision 0008(JSなし)を優先する(このファイルの
+   web/thread_detail.rsのdocコメント参照)。 #}
+{% if can_delete_thread %}
+{% if let Some(user) = current_user %}
+<form method="post" action="/threads/{{ thread_id }}/delete" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+    <button type="submit">スレッドを削除する</button>
+</form>
+{% endif %}
+{% endif %}
 
 <section class="comments" aria-label="コメント一覧">
     <h2>コメント</h2>

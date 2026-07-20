@@ -59,6 +59,11 @@ pub fn build_router(pool: PgPool) -> Router {
             "/threads/{thread_id}/comments/{comment_id}/delete",
             post(thread_detail::delete_comment),
         )
+        // F06(スレッド削除、issues/06)。作成者本人のみ削除可能(AC06-3)なので
+        // 同じくrequire_auth配下に置く。静的セグメント"/threads/{id}/comments"等と
+        // 動的な"/threads/{id}/delete"は末尾のリテラルが異なるためaxum(matchit)が
+        // 曖昧なく解決する。
+        .route("/threads/{id}/delete", post(thread_detail::delete_thread))
         .route_layer(from_fn_with_state(pool.clone(), middleware::require_auth))
         // P01(ログイン)・P02(登録)は未ログインで到達できる(F01/F02)。
         .route("/register", get(register::show).post(register::submit))

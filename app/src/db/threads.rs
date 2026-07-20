@@ -1,4 +1,19 @@
-//! スレッドの永続化(F05スレッド作成・F09スレッド一覧)。
+//! スレッドの永続化(F05スレッド作成・F09スレッド一覧・F06スレッド削除)。
+//!
+//! `delete`はF06(スレッド削除、issues/06)が使う。`formal/Bbs/Op.lean`の
+//! `deleteThread`(`findThread`→作成者検査→`commentsOf`/未削除込みの空検査→
+//! `modify`)に対応し、`db/comments.rs::delete`のTOCTOU対策(条件付き1文+
+//! `rows_affected`判定)と同じ形を踏襲する。ただし所有者チェックはこの1文に
+//! 含めない ―― スレッドの所有権は作成後変わらない(譲渡機能なし)のでレース対象では
+//! なく、コメント有無だけがレース対象という非対称があるため(web層が事前に
+//! 所有者検査を行い、この関数はコメント有無の検査のみを原子的に行う)。
+//!
+//! **F08のパターンはそのままでは移植できない**(F06レビューで実測): F08の条件は
+//! 更新対象の行自身に付くので1文で閉じるが、F06の条件は別テーブル(`comments`)を
+//! 見るため`EvalPlanQual`の再評価が効かず、同時挿入を取りこぼしてFK違反(500)になる。
+//! そのため`delete`の前に`find_by_id_for_update`で対象行を排他ロックする
+//! (詳細は同関数のdocコメント)。コメント作成側は`find_by_id_for_share`で対になる
+//! 共有ロックを取り、両者を直列化する。
 //!
 //! `insert`はF05(web/thread_create.rs)が使う。`list_all`はP03スレッド一覧
 //! (web/thread_list.rs)が使う読み取りで、F09が要求する表示項目のうち
@@ -199,6 +214,41 @@ where
     .await
 }
 
+/// F06(スレッド削除)。**このスレッドが実際に削除されたかどうか**を返す。
+/// `true` = このトランザクションが実際に削除した、
+/// `false` = コメントが1件以上あった(削除済みコメントも数える、AC06-2)ため
+/// 削除しなかった、あるいは対象IDが既に存在しなかった。
+///
+/// **呼び出し前に`find_by_id_for_update`で対象行をロックしていること**が前提。
+/// `where`の`not exists (コメントの有無)`だけでは同時挿入との競合を閉じられない
+/// (理由と実測は`find_by_id_for_update`のdocコメント参照)。ロック無しでこの関数を
+/// 呼ぶと、競合時に`Ok(false)`ではなくFK違反(`23503`)の`Err`が返り、画面には
+/// 500が出る。
+///
+/// サブクエリを`deleted_at is null`等で絞らないこと ―― `formal/Bbs/Op.lean`の
+/// `commentsOf`が削除済みも含めて数えることに対応する(AC06-2: 削除済みコメントが
+/// あるスレッドも削除できない)。
+///
+/// **所有者チェックはこの文に含めない**(このファイル冒頭のdocコメント参照)。
+/// 呼び出し側(`web/thread_detail.rs`)が事前に`author_id`を検査し、他人のスレッドは
+/// この関数を呼ぶ前に`Forbidden`へ倒す。
+pub async fn delete<'e, E>(executor: E, thread_id: i64) -> Result<bool, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    let result = sqlx::query!(
+        r#"
+        delete from threads
+        where id = $1
+          and not exists (select 1 from comments where comments.thread_id = $1)
+        "#,
+        thread_id
+    )
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,5 +425,144 @@ mod tests {
     async fn find_by_id_returns_none_for_a_nonexistent_id(pool: PgPool) {
         let row = find_by_id(&pool, 999_999).await.unwrap();
         assert!(row.is_none());
+    }
+
+    /// F06/AC06-1/decision 0014: コメント0件のスレッドは実際に(物理)削除される。
+    #[sqlx::test]
+    async fn delete_removes_a_thread_that_has_no_comments(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "タイトル", "本文").await.unwrap();
+
+        assert!(
+            delete(&pool, tid).await.unwrap(),
+            "コメント0件のスレッドは削除できる"
+        );
+        assert!(find_by_id(&pool, tid).await.unwrap().is_none());
+    }
+
+    /// F06/AC06-2/C-06: 未削除コメントが1件でもあれば削除しない。
+    #[sqlx::test]
+    async fn delete_does_not_remove_a_thread_that_has_a_comment(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "タイトル", "本文").await.unwrap();
+        insert_comment(&pool, tid, uid, "c1", far_future(), false).await;
+
+        assert!(
+            !delete(&pool, tid).await.unwrap(),
+            "コメントがあるスレッドは削除できない"
+        );
+        assert!(
+            find_by_id(&pool, tid).await.unwrap().is_some(),
+            "削除されずに残っているはず"
+        );
+    }
+
+    /// F06/AC06-2: **削除済みコメントだけ**でも削除を阻む。`commentsOf`(Op.lean)が
+    /// `deleted`で絞らないことに対応する ―― `where`のサブクエリを
+    /// `deleted_at is null`で絞ってはならない、という実装上の要点そのものを
+    /// 検証する回帰テスト。
+    #[sqlx::test]
+    async fn delete_does_not_remove_a_thread_that_has_only_a_deleted_comment(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "タイトル", "本文").await.unwrap();
+        insert_comment(&pool, tid, uid, "削除済みコメント", far_future(), true).await;
+
+        assert!(
+            !delete(&pool, tid).await.unwrap(),
+            "削除済みコメントだけでも削除を阻むはず(AC06-2)"
+        );
+        assert!(find_by_id(&pool, tid).await.unwrap().is_some());
+    }
+
+    /// C-10: 存在しないIDへの削除は`false`(呼び出し側で404に倒す。ここでは
+    /// エラーにならず0行更新で終わることだけを確認する)。
+    #[sqlx::test]
+    async fn delete_returns_false_for_a_nonexistent_thread_id(pool: PgPool) {
+        assert!(!delete(&pool, 999_999).await.unwrap());
+    }
+
+    /// TOCTOU対策の核心: 削除しようとしている最中に**別トランザクションが
+    /// コメントを挿入してコミットした**場合、後から`delete`を確定させる側は
+    /// その新しいコメントを見て削除を拒否する。「コメント0件の確認」と「削除」を
+    /// 呼び出し側で2文に分けていたら、確認時点では0件だったコメントが確認後に
+    /// 増えても削除が実行されてしまう窓ができる ―― `not exists`を`delete`と
+    /// 同じ1文に含めることで、実際の削除時点の状態を見て判定させ、この窓を閉じる。
+    #[sqlx::test]
+    async fn delete_is_blocked_by_a_comment_inserted_by_a_concurrent_transaction(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "タイトル", "本文").await.unwrap();
+
+        // 削除側のトランザクションを先に開始しておく(コメント挿入より前)。
+        // それでも`delete`文自体はまだ実行していない。
+        let mut tx_delete = pool.begin().await.unwrap();
+
+        // 別トランザクション(ここでは`pool`から直接、即コミット)が
+        // 割り込んでコメントを挿入する。
+        insert_comment(&pool, tid, uid, "割り込みコメント", far_future(), false).await;
+
+        // その後で`delete`文を実行すると、コミット済みの新しいコメントを見て拒否する
+        // (PostgresのデフォルトはREAD COMMITTEDなので、トランザクション開始時点
+        // ではなく各文の実行時点でコミット済みの変更が見える)。
+        let deleted = delete(&mut *tx_delete, tid).await.unwrap();
+        tx_delete.commit().await.unwrap();
+
+        assert!(
+            !deleted,
+            "delete実行時点でコメントが存在するので削除されてはならない"
+        );
+        assert!(find_by_id(&pool, tid).await.unwrap().is_some());
+    }
+
+    /// **真の競合**(上の`..._by_a_concurrent_transaction`は挿入が先にコミット済みという
+    /// 逐次ケースにすぎない)の回帰テスト。挿入側が**未コミットのまま**削除側と重なる場合、
+    /// `not exists`はスナップショット評価なのでコメントを見落とす ―― `for update`で
+    /// 先に行をロックしていないと、削除が実行されて文末のFK検査が`23503`を投げ、
+    /// `Ok(false)`ではなく`Err`(＝画面上は500)になる。
+    /// `find_by_id_for_update`を外すとこのテストは失敗する。
+    #[sqlx::test]
+    async fn delete_is_graceful_when_a_comment_is_inserted_by_an_overlapping_transaction(
+        pool: PgPool,
+    ) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "タイトル", "本文").await.unwrap();
+
+        // 挿入側: コメントを入れるがまだコミットしない(threads行にfor key shareを保持)。
+        let mut tx_insert = pool.begin().await.unwrap();
+        sqlx::query!(
+            "insert into comments (thread_id, author_id, body, created_at) values ($1, $2, $3, $4)",
+            tid,
+            uid,
+            "未コミットのコメント",
+            far_future(),
+        )
+        .execute(&mut *tx_insert)
+        .await
+        .unwrap();
+
+        // 削除側: ロック→削除。挿入側のロックで待たされる。
+        let pool2 = pool.clone();
+        let deleter = tokio::spawn(async move {
+            let mut tx = pool2.begin().await.unwrap();
+            let _t = find_by_id_for_update(&mut *tx, tid).await.unwrap();
+            let deleted = delete(&mut *tx, tid).await;
+            if deleted.is_ok() {
+                tx.commit().await.unwrap();
+            }
+            deleted
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !deleter.is_finished(),
+            "削除側は挿入側のロックでブロックしているはず"
+        );
+        tx_insert.commit().await.unwrap();
+
+        let deleted = deleter
+            .await
+            .unwrap()
+            .expect("FK違反のErrではなくOkが返るべき(500にしない)");
+        assert!(!deleted, "コミットされたコメントを見て削除を拒否するはず");
+        assert!(find_by_id(&pool, tid).await.unwrap().is_some());
     }
 }
