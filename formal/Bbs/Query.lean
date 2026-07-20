@@ -169,7 +169,9 @@ structure ThreadDetail where
 deriving Repr
 
 /-- F10 スレッド詳細。コメントは作成日時の昇順（会話の文脈順）。
-    **詳細ページのコメントにページネーションを掛けるかは未規定**（decision 0013）。 -/
+    **詳細ページのコメントはページネーションしない**（decision 0013 §3・決定済）。
+    AC10-2「関連する全コメントが表示される」に素直で、AC11-3 の自動スクロール先が
+    別ページに落ちない。コメント数が膨大だと重くなるトレードオフは明示的に受容している。 -/
 def threadDetail (db : Db) (tid : ThreadId) : Option ThreadDetail :=
   (db.threads.find? (·.id = tid)).map fun t =>
     { thread := t

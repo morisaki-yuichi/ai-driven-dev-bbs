@@ -1,12 +1,14 @@
 pub mod cookies;
 pub mod csrf;
 pub mod error;
+pub mod format;
 pub mod login;
 pub mod logout;
 pub mod middleware;
 pub mod params;
 pub mod register;
 pub mod thread_create;
+pub mod thread_detail;
 pub mod thread_list;
 pub mod views;
 
@@ -41,6 +43,10 @@ pub fn build_router(pool: PgPool) -> Router {
             "/threads/new",
             get(thread_create::show).post(thread_create::submit),
         )
+        // "/threads/{id}" はP04(スレッド詳細画面)。F10(スレッド詳細表示、issues/10)。
+        // 静的セグメント"/threads/new"と動的セグメント"/threads/{id}"はaxum(matchit)が
+        // 登録順に関わらず静的側を優先するため、両立できる。
+        .route("/threads/{id}", get(thread_detail::show))
         .route_layer(from_fn_with_state(pool.clone(), middleware::require_auth))
         // P01(ログイン)・P02(登録)は未ログインで到達できる(F01/F02)。
         .route("/register", get(register::show).post(register::submit))
@@ -50,7 +56,16 @@ pub fn build_router(pool: PgPool) -> Router {
         // `COPY static ./static`)のどちらでも実行時cwdからの相対で解決する。
         .nest_service("/static", ServeDir::new("static"))
         .fallback(fallback)
-        .with_state(pool)
+        .with_state(pool.clone())
+        // ログイン中に404を踏んだときのヘッダーを認証済み表示に揃える(F10)。
+        // `require_auth`の内側ではなくここに置くのは、`fallback`(未知URL)が
+        // `require_auth`の外にあるため ―― 詳細は`middleware::reflect_auth_on_error_page`。
+        // CSRFの2ミドルウェアより内側に置くことで、`same_origin_guard`が撥ねた
+        // 応答(認証前のエラー)がここへ来ないことも同時に保証する。
+        .layer(from_fn_with_state(
+            pool,
+            middleware::reflect_auth_on_error_page,
+        ))
         // decision 0021: CSRF対策(トークン発行 + 同一オリジン検証)はルータ全体に適用する。
         .layer(from_fn(csrf::csrf_token_middleware))
         .layer(from_fn(csrf::same_origin_guard))

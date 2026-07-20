@@ -607,6 +607,31 @@ theorem sortThreads_perm (db : Db) (k : SortKey) (ts : List Thread) :
   unfold sortThreads
   exact sortBy_length _ ts
 
+/-- 挿入は要素の集合を変えない（挿入対象自身か、元のリストの要素）。
+    `sortBy_mem`の土台。`deleted_comment_keeps_metadata`（F10）で、コメントが
+    `threadDetail`の並べ替え後も消えず残ることを示すのに使う。 -/
+theorem insertBy_mem {α : Type} (le : α → α → Bool) (x e : α) (l : List α) :
+    e ∈ insertBy le x l ↔ e = x ∨ e ∈ l := by
+  induction l with
+  | nil => simp [insertBy]
+  | cons b bs ih =>
+    unfold insertBy
+    split
+    · simp
+    · simp only [List.mem_cons, ih]
+      exact or_left_comm
+
+/-- 挿入ソート（`sortBy`）は要素の集合を変えない。並べ替えでは要素が
+    増減しないことの、件数版（`sortBy_length`）に対する会員版。 -/
+theorem sortBy_mem {α : Type} (le : α → α → Bool) (e : α) (l : List α) :
+    e ∈ sortBy le l ↔ e ∈ l := by
+  induction l with
+  | nil => simp [sortBy]
+  | cons a as ih =>
+    unfold sortBy
+    rw [insertBy_mem, ih]
+    simp
+
 /-- C-12: ページは常に10件以下。 -/
 theorem page_size_bound (db : Db) (k : SortKey) (p : Nat) :
     (threadList db k p).items.length ≤ pageSize := by
@@ -720,14 +745,34 @@ theorem hit_is_reachable (db : Db) (kw : String)
 /-! ### 10. 固定文言 (C-01 / AC08-2) -/
 
 theorem deleted_comment_renders_fixed_text (c : Comment) (h : c.deleted = true) :
-    renderCommentBody c = deletedCommentText := by sorry
+    renderCommentBody c = deletedCommentText := by
+  unfold renderCommentBody
+  simp [h]
 
-/-- AC10-3 の[解釈]: 削除済みでも作成者・日時は維持される。 -/
+/-- AC10-3 の[解釈]: 削除済みでも作成者・日時は維持される。
+    `threadDetail`は`c.deleted`で場合分けせず全コメントを`CommentView`に写すので、
+    削除済みかどうかに関わらず`id`・`createdAt`・`authorDisplayName`は元のコメントと
+    一致する（本文だけが`renderCommentBody`で固定文言に差し替わる）。 -/
 theorem deleted_comment_keeps_metadata (db : Db) (tid : ThreadId) (d : ThreadDetail)
     (h : threadDetail db tid = some d) (c : Comment) (hc : c ∈ db.comments)
     (hct : c.threadId = tid) :
     ∃ cv ∈ d.comments, cv.id = c.id ∧ cv.createdAt = c.createdAt ∧
-      cv.authorDisplayName = displayNameOf db c.authorId := by sorry
+      cv.authorDisplayName = displayNameOf db c.authorId := by
+  unfold threadDetail at h
+  rw [Option.map_eq_some_iff] at h
+  obtain ⟨t, hfind, hd⟩ := h
+  have htid : t.id = tid := by simpa using List.find?_some hfind
+  have hcmt : c ∈ Query.commentsOf db t.id := by
+    unfold Query.commentsOf
+    rw [List.mem_filter]
+    refine ⟨hc, ?_⟩
+    simp [htid, hct]
+  refine ⟨{ id := c.id, authorDisplayName := displayNameOf db c.authorId,
+            body := renderCommentBody c, createdAt := c.createdAt, deleted := c.deleted },
+    ?_, rfl, rfl, rfl⟩
+  rw [← hd]
+  simp only [List.mem_map]
+  exact ⟨c, (sortBy_mem _ c (Query.commentsOf db t.id)).mpr hcmt, rfl⟩
 
 end Invariant
 end Bbs

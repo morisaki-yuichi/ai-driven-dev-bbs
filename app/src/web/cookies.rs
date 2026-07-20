@@ -36,7 +36,7 @@ pub const CSRF_COOKIE_NAME: &str = "csrf_token";
 pub fn append_cookie(response: &mut Response, cookie: Cookie<'_>) -> Result<(), AppError> {
     let name = cookie.name().to_string();
     let value = HeaderValue::from_str(&cookie.to_string()).map_err(|e| {
-        AppError::Internal(format!("cookie {name} is not a valid header value: {e}"))
+        AppError::internal(format!("cookie {name} is not a valid header value: {e}"))
     })?;
     response.headers_mut().append(header::SET_COOKIE, value);
     Ok(())

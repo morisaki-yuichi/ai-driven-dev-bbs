@@ -151,7 +151,7 @@ pub async fn submit(
     let password = form.password.clone();
     let password_hash = tokio::task::spawn_blocking(move || db::password::hash(&password))
         .await
-        .map_err(|e| AppError::Internal(format!("password hashing task panicked: {e}")))??;
+        .map_err(|e| AppError::internal(format!("password hashing task panicked: {e}")))??;
 
     // decision 0002(critical): ハンドラの入口でトランザクションを開始し、Errを
     // 返す経路では必ずロールバックする規律を`db::with_transaction`に集約している
@@ -169,7 +169,7 @@ pub async fn submit(
             // ROLLBACKを送る —— decision 0002のNoWriteOnErrorが、
             // 「たまたまそうなる」ではなく構造として保証される。
             .map_err(|e| match db::users::is_unique_violation(&e) {
-                true => AppError::Domain(DomainError::DuplicateUniqueId),
+                true => AppError::domain(DomainError::DuplicateUniqueId),
                 false => AppError::from(e),
             })?;
         // C-18: 登録はセッションを作らない。AC01-5: ログイン画面へリダイレクトする。
@@ -184,7 +184,7 @@ pub async fn submit(
         // AC01-4: 重複は500やエラーページではなく、登録画面のユニークID欄への
         // インライン表示として返す(ui-ux-guidelinesの二重バリデーション要件)。
         // `AppError`の既定の写像(error.rs)は400を返すので、ここで捕まえる。
-        Err(AppError::Domain(DomainError::DuplicateUniqueId)) => Ok(render_form(
+        Err(e) if e.is_duplicate_unique_id() => Ok(render_form(
             csrf_token,
             &form.unique_id,
             &form.display_name,

@@ -33,7 +33,7 @@ pub trait HasCsrfToken {
 }
 
 /// `Form<T>`を包み、Cookie値とフォーム値のトークン一致を検証したうえで中身を取り出す
-/// エクストラクタ。検証に失敗すると403(`AppError::Csrf`)を返す。
+/// エクストラクタ。検証に失敗すると403(`AppError::csrf()`)を返す。
 /// ハンドラの引数型として使うことで、CSRF検証がハンドラ本体より前(DB書き込みより前)
 /// に必ず完了する(decision 0021 決定6: 拒否経路ではトランザクションを開かない)。
 pub struct CsrfForm<T>(pub T);
@@ -57,7 +57,7 @@ where
 
         if !tokens_match(&cookie_token, value.csrf_token()) {
             tracing::warn!("csrf: double-submit token mismatch, rejecting form submission");
-            return Err(AppError::Csrf.into_response());
+            return Err(AppError::csrf().into_response());
         }
         Ok(CsrfForm(value))
     }
@@ -123,7 +123,7 @@ pub async fn same_origin_guard(req: Request, next: Next) -> Response {
                 host = ?host,
                 "csrf: rejected state-changing request with mismatched Origin/Referer"
             );
-            return AppError::Csrf.into_response();
+            return AppError::csrf().into_response();
         }
     }
     next.run(req).await
