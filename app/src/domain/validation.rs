@@ -1,10 +1,10 @@
 //! formal/Bbs/Validation.lean の対応先。C-02(パスワード強度)/C-03(表示名)/
 //! C-04(ユニークID)/AC05-2・AC07-2(空チェック)を純粋な述語として実装する。
-//! `register_validation`はF01登録ハンドラが使う(F04〜F07は未実装)。
+//! `register_validation`はF01登録ハンドラが、`create_thread_validation`はF05
+//! スレッド作成ハンドラ(web/thread_create.rs)が使う。
 //!
-//! F04プロフィール編集・F05スレッド作成・F07コメント作成のハンドラは
-//! foundation-plan.md §5の範囲外(機能実装フェーズ)のため、それまでの間
-//! `dead_code` を抑止する。
+//! F04プロフィール編集・F07コメント作成のハンドラは foundation-plan.md §5の
+//! 範囲外(機能実装フェーズ)のため、それまでの間 `dead_code` を抑止する。
 //!
 //! ### 文字数の数え方(decision 0003)
 //! 「15文字以内」「12文字以上」はUnicodeコードポイント数で数える。バイト数は誤り。
@@ -141,6 +141,24 @@ pub fn register_validation(
     Ok(trim(display_name))
 }
 
+/// F05スレッド作成の項目間検査順序: タイトル→本文の順で、最初に失敗した項目の
+/// エラーのみを返す(AC05-2)。この順序は`formal/Bbs/Op.lean`の`createThread`
+/// (`ensure title` → `ensure body`)と一致させてあり、`createThread_atomic`/
+/// `createThread_does_not_modify_existing_threads`がオラクルとして参照した実装。
+/// 成功時はトリム済みの`(title, body)`を返す(decision 0004: 保存はトリム後の値)。
+pub fn create_thread_validation(
+    title: &str,
+    body: &str,
+) -> Result<(String, String), ValidationFailure> {
+    if !non_empty_text(title) {
+        return Err(ValidationFailure::TitleEmpty);
+    }
+    if !non_empty_text(body) {
+        return Err(ValidationFailure::BodyEmpty);
+    }
+    Ok((trim(title), trim(body)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +281,45 @@ mod tests {
         let too_long = "あいうえおかきくけこさしすせそた";
         let result = register_validation("testuser_01", "TestPassword123!", too_long);
         assert_eq!(result, Err(ValidationFailure::DisplayNameTooLong));
+    }
+
+    #[test]
+    fn create_thread_validation_accepts_nonempty_title_and_body() {
+        let result = create_thread_validation("AI駆動開発の未来について", "本文です");
+        assert_eq!(
+            result,
+            Ok((
+                "AI駆動開発の未来について".to_string(),
+                "本文です".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn create_thread_validation_rejects_empty_title_before_checking_body() {
+        // AC05-2: タイトル・本文どちらも空でも、タイトル検査が先に失敗する
+        // (formal/Bbs/Op.leanのcreateThreadと同じ順序)。
+        let result = create_thread_validation("", "");
+        assert_eq!(result, Err(ValidationFailure::TitleEmpty));
+    }
+
+    #[test]
+    fn create_thread_validation_rejects_blank_title_like_fullwidth_space_only() {
+        // decision 0004: 全角スペースのみは「空」として扱う。
+        let result = create_thread_validation("　　", "本文です");
+        assert_eq!(result, Err(ValidationFailure::TitleEmpty));
+    }
+
+    #[test]
+    fn create_thread_validation_rejects_empty_body_after_title_passes() {
+        let result = create_thread_validation("タイトル", "");
+        assert_eq!(result, Err(ValidationFailure::BodyEmpty));
+    }
+
+    #[test]
+    fn create_thread_validation_trims_title_and_body() {
+        // decision 0004: 保存はトリム後の値。
+        let result = create_thread_validation(" タイトル ", " 本文 ");
+        assert_eq!(result, Ok(("タイトル".to_string(), "本文".to_string())));
     }
 }

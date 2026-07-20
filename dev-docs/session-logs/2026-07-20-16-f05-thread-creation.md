@@ -1,0 +1,47 @@
+# セッションログ: 2026-07-20 #16 F05スレッド作成の実装・レビュー・裁定反映
+
+- フェーズ: 4（機能実装フェーズ）
+- 今回やったこと:
+    - オーケストレーション形式（S1 状態復元 → G1 スコープ承認 → S2 証明+TDD実装 → S3 レビュー → G3 裁定 → 裁定反映）で本サイクルを進行した。
+    - **S1（状態復元）**: `docs/product/issues/05_thread_creation.md`・`dev-docs/requirements-analysis.md`（F05/AC05-1〜4）を読み、直前までの状態を確認した。
+    - **G1（スコープ承認）**: 進行役がユーザーに諮り、F05本体に加えAC05-3「作成後、一覧に表示される」を満たすためthread_listを最低限の実データ表示へ拡張する範囲を承認済みとした。ページネーション・空状態・ソートはF09に残す。二重送信抑止の要否も論点として提示され、この時点では未決着（後述、G3で決着）。
+    - **S2（証明+TDD実装）**:
+        - `formal/Bbs/Invariant.lean` を証明: `createThread_atomic`（decision 0002。register_atomic/login_atomicと同じ構造）、`nodup_map_eq_of_mem`（汎用list補題）、`ensure_true_eq`/`ensure_false_eq`（`Action.ensure`のBool分岐を具体形へ落とす補助）、`createThread_does_not_modify_existing_threads`（C-05/AC05-4。`thread_immutable`の一般形の代わりに`createThread`単体へ絞った版）。
+        - 証明中、既存の一般形`thread_immutable`が`Db`の整形式性（スレッドIDの一意性・鮮度、`Wf`相当）を仮定しないと**偽**であることを発見した（`#eval`での反例確認）。この時点では暫定的にスコープを絞る判断（`thread_immutable`は`sorry`のまま維持しF06〜F08実装時に一般形へ拡張する想定）を取り、`decision 0025`として起票（`decided_by: ai`、未承認）。後にS3レビューとG3裁定でこの暫定判断自体が訂正される（後述）。
+        - `app/src/domain/validation.rs`: `create_thread_validation`（タイトル→本文の順で検査、formal側`createThread`と同じ順序）を追加、単体テスト5件。
+        - `app/src/db/threads.rs`（新規）: `insert`・`list_all`（作成日時降順、ページネーションなし）を追加、`#[sqlx::test]`4件。`app/.env`のDATABASE_URLがcompose管理外のポート5540（`bbs-dev-db`コンテナ）を指していたため、compose.yamlが管理する5432（空DB）へ修正し、`sqlx migrate run`で初期スキーマを適用した。
+        - `app/src/web/thread_create.rs`（新規）: GET/POST `/threads/new`（P05）。`app/templates/thread_create.html`（新規）。`app/src/web/params.rs`に`CreateThreadForm`追加。`app/src/web/mod.rs`にルーティング追加（`require_auth`配下）。
+        - `app/src/web/thread_list.rs`・`app/templates/thread_list.html`: `db::threads::list_all`を呼び実データを表示するよう拡張。P03の必須要素「新規スレッド作成」リンクを追加（agent-browserが発見できる可視リンク、H-02）。
+        - `app/tests/thread_create_test.rs`（新規）: 結合テスト9件（フォーム描画、未ログインでのGET/POSTリダイレクト、正常作成→一覧反映、タイトル/本文空エラー、編集UI不存在、CSRF不一致403）。
+        - `cargo sqlx prepare`で`.sqlx/`を更新（新規クエリ2件のキャッシュを追加。無関係な既存キャッシュ1件が誤って削除されたため`git checkout`で復元）。`SQLX_OFFLINE=true`・`DATABASE_URL`無しでの`cargo check --bin bbs`が通ることを確認（Dockerビルド経路、H-06/H-13）。
+        - `cargo test`（103件）・`cargo clippy --all-targets`（警告なし）・`cargo fmt`・`lake build`が全て緑であることを確認。
+        - `/verify`: ホストで`cargo run`相当のバイナリを起動し、curlで登録→ログイン→スレッド作成→一覧反映→空タイトル/空本文エラー→未ログインリダイレクト→CSRF不一致403→二重送信（意図的に2件作成される）→編集UI不存在、を一通り確認した。
+    - **S3（レビュー）**:
+        - 重大な指摘は0件。ただしレビューワーカーは`/code-review`・`/security-review`スキルを起動せず、差分を直接読んで自前のツールで実測検証する方法を採り、その逸脱を自ら明示した。
+        - XSSは実ペイロードを3コンテキスト（要素内・属性値・textarea内）で投稿してAskamaのエスケープを確認した。`app/.env`の変更は`.gitignore`・`.dockerignore`・`compose.yaml`の`environment:`により3重に遮断され、評価者経路（H-06/H-13）に無影響であることを確認した。
+        - `thread_immutable`について、id が重複した不正な`db`と`steps = []`だけで反証可能な反例を、Leanで実際に構成して提示した（`#print axioms`に`sorryAx`を含まない本物の反証）。「偽の命題は将来どの時点でも証明できないため、証明の後回しではなく言明そのものの修正が必要」と判定し、S2時点の暫定判断（decision 0025の当初結論）を差し戻した。
+        - 重要な事故経路を発見: CLAUDE.mdが指示していた素の`cargo sqlx prepare`はテストターゲットを走査しないため、テスト専用クエリのオフラインキャッシュを削除する。実装者は本セッション中に実際にこれを踏んで手動復旧しており、毎セッション再発する問題だと指摘した。
+    - **G3（裁定）とその反映**: ユーザーが以下を裁定し、それぞれ反映した。
+        - `decision 0025`を承認（`decided_by: ai` → `ai+user`、`status: 提案` → `決定済`）。結論部の論理的誤り（「`thread_immutable`は`sorry`のまま維持しF06〜F08実装時に一般形へ拡張する想定」という当初記述）を訂正し、変更履歴に記録した。
+        - `thread_immutable`の言明に`hnodup`（`(db.threads.map (·.id)).Nodup`）・`hfresh`（`∀ t ∈ db.threads, t.id < db.nextThreadId`）の2仮定を追加し、真の命題に直した。`sorry`は残すが、docコメントを「偽の命題の証明放置」ではなく「真だが未証明」と読み取れる内容に書き換えた。
+        - `created_at`の表示をdecision 0009が定めるJSTの`YYYY-MM-DD HH:MM`に整形する純粋関数`format_created_at`（`app/src/web/thread_list.rs`）を追加し、単体テスト3件（分単位表示、JSTでの日付繰り上がり、秒・ミリ秒非表示）を書いた。
+        - C-05のテストを「カード内に操作要素が無い」＋「編集エンドポイントが存在しない」の2軸に書き換えた（`app/tests/thread_create_test.rs`の`thread_list_has_no_edit_ui_for_created_thread`）。ページ全体への`!html.contains("編集")`という脆いテストを避けた。
+        - エラー経路のOk包みを解消した。
+        - `formal/Bbs/Invariant.lean`冒頭コメントの誤り（`createThread_requires_auth`をF05の成果としていたが、実際はF02時点で`requireAuth_fails_without_session`を土台に証明済み）を訂正した。
+        - CLAUDE.mdの主要コマンド節・Definition of Done節の2箇所を`cargo sqlx prepare -- --all-targets`に修正した（ユーザーの事後承認済み）。
+    - 見送りが確定した事項（G3裁定）: `list_all`のLIMIT追加（F09のページネーションで扱う）／タイトル・本文の最大長検査（原典が上限を規定していない）／未使用の戻り値とフィールド／`POST /threads/new`のクロスオリジン拒否テストの追加。
+- 決めたこと（関連 decision 番号があれば併記）:
+    - 機能セッションごとのLean証明スコープ: 既存の横断的invariant（`Step`/`runAll`ベースの一般形）が実装未着手の操作を含む場合、そのセッションで追加する単一操作に絞った代替定理で不変条件Mustを満たしてよい。ただし残す一般形の言明は必ず真でなければならず、反例が見つかった場合はその場で必要な仮定を補って真の形に直してから`sorry`を残す（decision 0025、`ai+user`・決定済）。
+    - 二重送信抑止は導入しない（現状維持）。スレッドには一意制約になり得る自然キーが無く連打で重複投稿になり得るが、decision 0008（SSR/MPA・JSなし、critical）に例外を作らないことを優先した、というユーザー裁定（G3）。F07コメント作成でも同じ論点が再浮上する見込み。
+    - `cargo sqlx prepare`はテストターゲットを走査しないため、CLAUDE.mdの手順を`cargo sqlx prepare -- --all-targets`に修正（ユーザー事後承認済み）。
+    - `app/.env`のDATABASE_URLをcompose管理外の孤立コンテナ（ポート5540）からcompose.yaml管理のポート5432へ修正（decision化不要のローカル環境設定の修正。`.env`はgitignore対象）。
+- 次にやること:
+    - ユーザー承認後、Conventional Commitsでコミットし、PRを作成する（1論理変更1コミットの単位は`dev-docs/workflow.md`参照）。本サイクルの内容は現時点で未コミット。
+    - F06（スレッド削除）着手時、`thread_immutable`をその時点で一般形のまま証明できるか、あるいは同様にスコープを絞るかを判断する。`comment_body_immutable`・`deletion_irreversible`にも同種の`Wf`仮定漏れがないか、着手時に反例の有無を確認する（decision 0025の申し送り）。
+    - 見送りが確定した事項（`list_all`のLIMIT・最大長検査・未使用コードの整理・クロスオリジン拒否テスト）は、対応する機能（F09等）の実装セッションで再検討する。
+- 未解決事項:
+    - `formal/Bbs/Invariant.lean`の`thread_immutable`は仮定を補って真の命題に直したが、本体は`sorry`のまま。証明にはF06〜F08（Rust側は未実装）を含む`Step`全種がこの2性質を保つことを示す必要があり、F06〜F08実装時に埋める。`comment_body_immutable`・`deletion_irreversible`ほかF06〜F13対応の定理も引き続き`sorry`（未実装機能に対応するため、当初からの既定方針どおり）。
+    - `Wf`（Db整合性述語）全体の保存証明は依然として未着手（F01〜F03の時点から持ち越し）。
+    - ログイン中ユーザーが404を踏むと未ログイン用ヘッダーが出る（S3で確認された既知の挙動、本サイクルでは未修正）。
+    - 必須フィールド欠落POSTが403でなく422になる（S3で確認された既知の挙動、本サイクルでは未修正）。
+    - 二重送信抑止はF07（コメント作成）で再浮上する見込み（G3裁定を踏襲するか、その時点で再検討するかは持ち越し）。
