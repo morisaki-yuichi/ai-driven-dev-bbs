@@ -1,10 +1,11 @@
 //! formal/Bbs/Validation.lean の対応先。C-02(パスワード強度)/C-03(表示名)/
 //! C-04(ユニークID)/AC05-2・AC07-2(空チェック)を純粋な述語として実装する。
 //! `register_validation`はF01登録ハンドラが、`create_thread_validation`はF05
-//! スレッド作成ハンドラ(web/thread_create.rs)が使う。
+//! スレッド作成ハンドラ(web/thread_create.rs)が、`create_comment_validation`はF07
+//! コメント作成ハンドラ(web/thread_detail.rs)が使う。
 //!
-//! F04プロフィール編集・F07コメント作成のハンドラは foundation-plan.md §5の
-//! 範囲外(機能実装フェーズ)のため、それまでの間 `dead_code` を抑止する。
+//! F04プロフィール編集のハンドラは foundation-plan.md §5の範囲外(機能実装フェーズ)
+//! のため、それまでの間 `dead_code` を抑止する。
 //!
 //! ### 文字数の数え方(decision 0003)
 //! 「15文字以内」「12文字以上」はUnicodeコードポイント数で数える。バイト数は誤り。
@@ -157,6 +158,17 @@ pub fn create_thread_validation(
         return Err(ValidationFailure::BodyEmpty);
     }
     Ok((trim(title), trim(body)))
+}
+
+/// F07コメント作成の検査: 本文の空チェックのみ(AC07-2)。`formal/Bbs/Op.lean`の
+/// `createComment`(`ensure body`)と一致させ、`createComment_atomic`/
+/// `createComment_does_not_modify_existing_comments`がオラクルとして参照した実装。
+/// 成功時はトリム済みの本文を返す(decision 0004: 保存はトリム後の値)。
+pub fn create_comment_validation(body: &str) -> Result<String, ValidationFailure> {
+    if !non_empty_text(body) {
+        return Err(ValidationFailure::BodyEmpty);
+    }
+    Ok(trim(body))
 }
 
 #[cfg(test)]
@@ -321,5 +333,31 @@ mod tests {
         // decision 0004: 保存はトリム後の値。
         let result = create_thread_validation(" タイトル ", " 本文 ");
         assert_eq!(result, Ok(("タイトル".to_string(), "本文".to_string())));
+    }
+
+    #[test]
+    fn create_comment_validation_accepts_nonempty_body() {
+        let result = create_comment_validation("コメント本文です");
+        assert_eq!(result, Ok("コメント本文です".to_string()));
+    }
+
+    #[test]
+    fn create_comment_validation_rejects_empty_body() {
+        let result = create_comment_validation("");
+        assert_eq!(result, Err(ValidationFailure::BodyEmpty));
+    }
+
+    #[test]
+    fn create_comment_validation_rejects_blank_body_like_fullwidth_space_only() {
+        // decision 0004: 全角スペースのみは「空」として扱う。
+        let result = create_comment_validation("　　");
+        assert_eq!(result, Err(ValidationFailure::BodyEmpty));
+    }
+
+    #[test]
+    fn create_comment_validation_trims_body() {
+        // decision 0004: 保存はトリム後の値。
+        let result = create_comment_validation(" コメント ");
+        assert_eq!(result, Ok("コメント".to_string()));
     }
 }

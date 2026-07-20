@@ -30,4 +30,36 @@
     {% endfor %}
     {% endif %}
 </section>
+
+<section class="comment-form" aria-label="コメント投稿">
+    <h2>コメントを投稿</h2>
+    {# 共通メッセージエリア(common_layout.md §3 / ui-ux-guidelines §2・§4)。
+       thread_create.htmlと同じく、空でも要素自体は常に置く(aria-liveが変化を検知するため)。 #}
+    <div class="message-area" role="alert" aria-live="assertive">
+        {% if let Some(msg) = comment_form_message %}
+        <p class="message message-error">{{ msg }}</p>
+        {% endif %}
+    </div>
+
+    {% if let Some(user) = current_user %}
+    {# novalidate: ネイティブ検証バブルはagent-browserから読めないため無効化し、
+       検証はサーバ側に一本化する(decision 0023 / ui-ux-guidelines §6)。 #}
+    <form method="post" action="/threads/{{ thread_id }}/comments" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+
+        <div class="field">
+            <label for="comment_body">本文</label>
+            <textarea id="comment_body" name="body" rows="4" required{% if comment_error.is_some() %} aria-invalid="true" aria-describedby="comment_body_error"{% endif %}>{{ comment_body }}</textarea>
+            {% if let Some(msg) = comment_error %}
+            <p class="field-error" id="comment_body_error">{{ msg }}</p>
+            {% endif %}
+        </div>
+
+        {# C-05 / AC07-4: コメント作成後に本文を編集するUIは存在しない。ここに
+           編集用のボタン・リンクを追加しないこと(formal/Bbs/Op.leanにコメント更新
+           操作が無いことに対応)。 #}
+        <button type="submit">投稿</button>
+    </form>
+    {% endif %}
+</section>
 {% endblock %}

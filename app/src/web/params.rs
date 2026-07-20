@@ -100,6 +100,21 @@ impl HasCsrfToken for CreateThreadForm {
     }
 }
 
+/// POST /threads/{id}/comments のフォーム(P04)。decision 0021によりCSRFトークンを
+/// 必須で持つ。本文は機微情報ではないため`CreateThreadForm`と同様
+/// `#[derive(Debug)]`をそのまま使う。
+#[derive(Debug, Deserialize)]
+pub struct CreateCommentForm {
+    pub body: String,
+    pub csrf_token: String,
+}
+
+impl HasCsrfToken for CreateCommentForm {
+    fn csrf_token(&self) -> &str {
+        &self.csrf_token
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListParams {
     /// 空文字列は「全件表示」(decision 0011: containsSubstr s "" = true)。
