@@ -82,7 +82,12 @@ where
 /// P04スレッド詳細(F10)に表示する1件。一覧(`ThreadListRow`)と異なり、
 /// コメント数・最終更新日時は持たない(詳細画面はコメント自体を列挙するので不要、
 /// ユーザー承認済みのスコープ)。
+///
+/// `author_id`はF06(スレッド削除)が追加した。「自分のスレッドか」の判定
+/// (削除ボタンの表示可否・POST時の認可検査)に必要な数値ID
+/// (`author_display_name`は表示用で、同姓同名がありうるため認可判定には使えない)。
 pub struct ThreadDetailRow {
+    pub author_id: i64,
     pub title: String,
     pub body: String,
     pub author_display_name: String,
@@ -101,11 +106,92 @@ where
     sqlx::query_as!(
         ThreadDetailRow,
         r#"
-        select threads.title, threads.body, threads.created_at,
+        select threads.author_id, threads.title, threads.body, threads.created_at,
                users.display_name as author_display_name
         from threads
         join users on users.id = threads.author_id
         where threads.id = $1
+        "#,
+        id
+    )
+    .fetch_optional(executor)
+    .await
+}
+
+/// `find_by_id`と同じ行を返しつつ、**そのスレッド行を`for update`で排他ロックする**。
+/// F06(スレッド削除)の`delete`を呼ぶ前に必ずこれを通す。
+///
+/// **なぜ必要か(レビューで実測した不具合)**: `delete`の`where`に`not exists`を
+/// 置くだけでは同時挿入との競合を防げない。PostgresのREAD COMMITTEDでは、
+/// `not exists`サブクエリは**その文の開始時点のスナップショット**で評価される。
+/// 別トランザクションが未コミットのコメントを持っている場合、サブクエリはそれを
+/// 見ずに「0件」と判定し、`threads`行のロック取得で待たされ、相手がコミットした後に
+/// 削除へ進む。`EvalPlanQual`による条件再評価は**更新された対象行**に対して働くもので、
+/// 別テーブル(`comments`)を見るサブクエリは再評価されない ―― 結果、削除が実行され、
+/// 文末のFK検査(`comments_thread_id_fkey`、`on delete`指定なし＝`no action`)が
+/// 初めてこれを捕まえて`23503`を投げる。孤児コメントは生じないが、ユーザーには
+/// 「コメントがあるので削除できません」ではなく**500**が返る。
+///
+/// 先にこのロックを取れば、コメント挿入側(FKが`for key share`を取る)は待たされ、
+/// ロック取得後の`delete`文は新しいスナップショットでコメントを見て0行になる。
+///
+/// **F08(`db/comments.rs::delete`)との違い**: あちらは`update comments ... where
+/// id = $1 and deleted_at is null`で、条件が**更新対象の行自身**に付いているため
+/// `EvalPlanQual`の再評価が効き、1文だけで競合が閉じる。F06は条件が別テーブルに
+/// あるためこのパターンがそのまま移植できない ―― 「条件付き1文＋`rows_affected`」の
+/// 形は保ちつつ、行ロックで条件の安定性を別途担保する。
+pub async fn find_by_id_for_update<'e, E>(
+    executor: E,
+    id: i64,
+) -> Result<Option<ThreadDetailRow>, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    sqlx::query_as!(
+        ThreadDetailRow,
+        r#"
+        select threads.author_id, threads.title, threads.body, threads.created_at,
+               users.display_name as author_display_name
+        from threads
+        join users on users.id = threads.author_id
+        where threads.id = $1
+        for update of threads
+        "#,
+        id
+    )
+    .fetch_optional(executor)
+    .await
+}
+
+/// `find_by_id`と同じ行を返しつつ、スレッド行を`for share`で共有ロックする。
+/// F07(コメント作成)の存在検査に使う。
+///
+/// `for share`は`find_by_id_for_update`の`for update`と衝突するので、スレッド削除と
+/// コメント作成が正しく直列化される:
+/// - 削除が先にロックを取った場合、この検査は待たされ、削除確定後は行が消えているので
+///   `None` ＝ C-10の404になる(FK違反による500にならない)。
+/// - この検査が先にロックを取った場合、削除側の`for update`が待たされ、コメント確定後に
+///   `delete`の`not exists`がそれを見て0行 ＝ `has_comments`になる。
+///
+/// ロックを取らない素の`select`ではどちらも成立しない ―― スナップショットで
+/// 「スレッドは在る」と読んだ後に削除が確定し、`insert`のFK検査が`23503`を投げる
+/// (トランザクション内に読み取りを移すだけでは閉じない。`select`は行をロックしないため)。
+pub async fn find_by_id_for_share<'e, E>(
+    executor: E,
+    id: i64,
+) -> Result<Option<ThreadDetailRow>, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    sqlx::query_as!(
+        ThreadDetailRow,
+        r#"
+        select threads.author_id, threads.title, threads.body, threads.created_at,
+               users.display_name as author_display_name
+        from threads
+        join users on users.id = threads.author_id
+        where threads.id = $1
+        for share of threads
         "#,
         id
     )
@@ -270,6 +356,7 @@ mod tests {
     }
 
     /// F10(スレッド詳細): IDで1件取得でき、作成者の表示名まで解決されている。
+    /// F06: `author_id`(認可判定用の数値ID)も返す。
     #[sqlx::test]
     async fn find_by_id_returns_the_matching_thread(pool: PgPool) {
         let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
@@ -279,6 +366,7 @@ mod tests {
         assert_eq!(row.title, "タイトル");
         assert_eq!(row.body, "本文");
         assert_eq!(row.author_display_name, "テストユーザー01");
+        assert_eq!(row.author_id, uid);
     }
 
     /// C-10/decision 0014: 存在しないIDは`None`(呼び出し側で404に倒す)。

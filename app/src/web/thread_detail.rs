@@ -285,6 +285,11 @@ pub async fn create_comment(
     // (critical: 1リクエスト=1トランザクション)の趣旨どおり、読み取りを含めて
     // ハンドラの副作用はこの1トランザクションに収める。
     //
+    // **ただしトランザクションに入れるだけでは閉じない**(F06レビューで実測):
+    // 素の`select`は行をロックしないので、「在る」と読んだ後に削除が確定し、
+    // `insert`のFK検査が23503を投げる経路が残る。`for share`版で読み、削除側の
+    // `for update`と直列化させる(`db/threads.rs::find_by_id_for_share`参照)。
+    //
     // render_detail(バリデーション失敗時の再描画)は`&PgPool`を要求するため、
     // トランザクションとは別にpoolのクローンを渡す(PgPoolのクローンは内部Arcの
     // 複製で安価)。再描画はSELECTのみでこのトランザクションへの書き込みは
@@ -293,7 +298,7 @@ pub async fn create_comment(
     db::with_transaction(&pool, move |mut tx| async move {
         // `formal/Bbs/Op.lean`の`createComment`と同じ順序: requireAuth(ミドルウェア) →
         // findThread(スレッド存在検査、無ければ404) → 本文空検査。
-        let thread = db::threads::find_by_id(&mut *tx, id)
+        let thread = db::threads::find_by_id_for_share(&mut *tx, id)
             .await?
             .ok_or(DomainError::NotFound)?;
 
