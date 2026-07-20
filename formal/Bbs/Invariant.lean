@@ -717,6 +717,21 @@ theorem deleteComment_atomic (sid : SessionId) (cid : CommentId) :
   intro _
   exact modify_noWriteOnError _
 
+/-- F04 プロフィール編集の原子性(decision 0002)。`updateDisplayName`は`requireAuth`→
+    表示名検査(`guardNone`)、の順に検査を重ねるだけで、実際に`Db`を書き換える`modify`
+    (表示名の書き換え)は全検査を通過した後に一度だけ実行される。`logout_atomic`と
+    同じ構造(末尾が`modify`)。表示名検査を`guardNone`で書く理由は`Op.lean`の
+    `updateDisplayName`docコメント参照(生の`match`だとこの`apply`合成が
+    `whnf`のtimeoutで詰まることを実測済み)。 -/
+theorem updateDisplayName_atomic (sid : SessionId) (n : String) :
+    NoWriteOnError (updateDisplayName sid n) := by
+  unfold updateDisplayName
+  apply bind_noWriteOnError (requireAuth_noWriteOnSuccess sid)
+  intro _
+  apply bind_noWriteOnError (guardNone_noWriteOnSuccess _ _)
+  intro _
+  exact modify_noWriteOnError _
+
 /-! ### 3. 認証ガード (C-09 / AC02-1, AC09-1, AC10-1, AC11-1, AC12-1)
 
 有効なセッションが無ければ、いかなる認証必須操作も
@@ -773,6 +788,17 @@ theorem logout_requires_auth (db : Db) (sid : SessionId)
     (logout sid) db = (.error .notAuthenticated, db) := by
   have hr := requireAuth_fails_without_session db sid h
   unfold logout
+  exact bind_fails_with hr
+
+/-- F04 プロフィール編集(C-09): 有効なセッションが無ければ`updateDisplayName`自体が
+    `notAuthenticated`で失敗し、状態も変えない。`logout_requires_auth`と同じ構造
+    (`requireAuth`が最初の`bind`)。実装側では`POST /profile/edit`を`require_auth`配下に
+    置くことでこれと同じ契約にする。 -/
+theorem updateDisplayName_requires_auth (db : Db) (sid : SessionId) (n : String)
+    (h : NoSession db sid) :
+    (updateDisplayName sid n) db = (.error .notAuthenticated, db) := by
+  have hr := requireAuth_fails_without_session db sid h
+  unfold updateDisplayName
   exact bind_fails_with hr
 
 theorem viewThreadList_requires_auth (db : Db) (sid : SessionId) (k : SortKey) (p : Nat)
@@ -2021,7 +2047,7 @@ theorem updateDisplayName_effect (db : Db) (sid : SessionId) (uid : UserId) (n :
     simpa [Validation.displayNameValid, Option.isNone_iff_eq_none] using hv
   unfold updateDisplayName
   simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get,
-    Action.pure, Action.modify, requireAuth, hs, hf]
+    Action.pure, Action.modify, requireAuth, Action.guardNone, hs, hf]
 
 /-- 更新後のユーザー列から`uid`を引くと、必ず新しい表示名が返る。
     `map`は`.id`を保存する（書き換えるのは`displayName`だけ）ので、`find?`の

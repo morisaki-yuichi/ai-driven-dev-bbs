@@ -101,12 +101,15 @@ def logout (sid : SessionId) : Action Unit := do
 /-- F04 プロフィール編集。AC04-1 / AC04-3。
     表示名のみ変更可能。D03 方式①のため、投稿側の書き換えは不要
     ＝ AC04-2「過去の投稿にも反映」は**この操作の副作用ではなく
-    Query 側の JOIN によって自動的に満たされる**。 -/
+    Query 側の JOIN によって自動的に満たされる**。
+    表示名検査は`guardNone`経由で書く(生の`match`にすると、`register`が
+    最初にそうだったのと同じ理由――`Bbs.Db`の`guardNone`docコメント――で
+    do記法が早期リターン用matchを継続共有のjoin point形式にelaborateし、
+    `updateDisplayName_atomic`(`Invariant.lean`)の`apply bind_noWriteOnError`に
+    よる合成証明が`whnf`のdeterministic timeoutで詰まる。実測して確認済み)。 -/
 def updateDisplayName (sid : SessionId) (newName : String) : Action Unit := do
   let uid ← requireAuth sid
-  match Validation.displayNameFailure newName with
-  | some v => fail (.validation v)
-  | none => Action.pure ()
+  Action.guardNone (Validation.displayNameFailure newName) .validation
   let newName := Validation.trim newName   -- decision 0004
   modify (fun s => { s with
     users := s.users.map (fun u => if u.id = uid then { u with displayName := newName } else u) })
