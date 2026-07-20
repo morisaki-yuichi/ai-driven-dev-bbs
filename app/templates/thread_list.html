@@ -9,10 +9,17 @@
    `web/thread_detail.rs::delete_thread`が`/?thread_deleted=1`へリダイレクトする
    ―― 削除後はスレッド自体が404になり元の詳細画面には戻れないため、一覧側に
    通知を出す。空でも要素自体は常に置く(thread_detail.htmlの共通メッセージエリアと
-   同じ理由、aria-liveが変化を検知するため)。 #}
+   同じ理由、aria-liveが変化を検知するため)。
+   decision 0033: `q`が200文字を超えた場合、黙って切り詰めずここに通知を出す
+   (ui-ux-guidelines §1、H-12の観測性)。切り詰め後の値は検索窓・検索結果見出し・
+   ページ送りリンクのいずれにも既に反映されている(`web/params.rs::ListParams::parse`
+   が切り詰め済みの`q`を返す)。 #}
 <div class="message-area" aria-live="polite">
     {% if let Some(msg) = thread_deleted_message %}
     <p class="message message-success">{{ msg }}</p>
+    {% endif %}
+    {% if q_truncated %}
+    <p class="message message-warning">検索キーワードが200文字を超えたため、先頭200文字で検索しました。</p>
     {% endif %}
 </div>
 
@@ -22,12 +29,20 @@
 
 {# F11(検索、issues/11_search_function.md)。AC11-2の検索窓。GET送信なので
    novalidateは不要(サーバ側の検証を要する入力欄が無い、空クエリは全件表示で
-   エラーにならない、decision 0011)。 #}
+   エラーにならない、decision 0011)。`method="get" action="/"`により
+   ブラウザが`q`をURLクエリへ自動エンコードするため、ここではエンコード不要
+   (C-13のページ送りリンクとは別経路、web/params.rs::encode_query_componentの
+   docコメント参照)。ページはあえて保持しない ―― 新しい検索は常に1ページ目から
+   始める。`sort`はhidden inputで保持する ―― F12でソートUIが入った時点で
+   「検索すると選択中のソートが既定に戻る」というC-13違反の経路が生まれるのを
+   先回りして塞ぐ(現状はF12未実装のため常に既定値`created_desc`が往復するだけで
+   挙動は変わらない)。 #}
 <form method="get" action="/" class="search-form" role="search">
     <div class="field">
         <label for="search_q">キーワード検索</label>
         <input type="text" id="search_q" name="q" value="{{ q }}">
     </div>
+    <input type="hidden" name="sort" value="{{ sort_value }}">
     <button type="submit">検索</button>
 </form>
 
@@ -77,14 +92,18 @@
    `agent-browser`が「ボタンが存在する」と誤観測しないようにするため。
    前後どちらのリンクも出ない場合は`<nav>`ごと出さない ―― 中身が空のまま
    `aria-label="ページ送り"`だけが残ると、支援技術・`agent-browser`のいずれにも
-   「ページ送りがある」と観測されうる。 #}
+   「ページ送りがある」と観測されうる。
+   C-13: `q`・`sort`を保持したまま`page`だけを変える(decision 0011 §影響)。
+   `q_encoded`はURLクエリ値として安全な形にパーセントエンコード済み
+   (web/params.rs::encode_query_component)。`sort_value`はF12実装後もソートUIの
+   選択値をここに渡すだけで壊れない形にしてある(現状は常に既定値)。 #}
 {% if has_prev || has_next %}
 <nav class="pagination" aria-label="ページ送り">
     {% if has_prev %}
-    <a href="/?page={{ prev_page }}">前に戻る</a>
+    <a href="/?q={{ q_encoded }}&sort={{ sort_value }}&page={{ prev_page }}">前に戻る</a>
     {% endif %}
     {% if has_next %}
-    <a href="/?page={{ next_page }}">次に進む</a>
+    <a href="/?q={{ q_encoded }}&sort={{ sort_value }}&page={{ next_page }}">次に進む</a>
     {% endif %}
 </nav>
 {% endif %}

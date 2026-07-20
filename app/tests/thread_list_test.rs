@@ -215,7 +215,12 @@ async fn thread_list_first_page_has_ten_items_and_only_next_link(pool: PgPool) {
         "11件目(最古)は1ページ目に出てはいけない"
     );
     assert!(!html.contains("前に戻る"), "1ページ目に「前に戻る」は不可");
-    assert!(html.contains(r#"href="/?page=2""#), "「次に進む」が無い");
+    // C-13: ページ送りリンクは`q`・`sort`を保持したまま`page`だけを変える
+    // (decision 0011 §影響、web/thread_list.rs::show)。
+    assert!(
+        html.contains(r#"href="/?q=&sort=created_desc&page=2""#),
+        "「次に進む」が無い"
+    );
 }
 
 /// AC09-3/AC09-5: 2ページ目には残りの1件だけが表示され、「前に戻る」が有効、
@@ -240,7 +245,7 @@ async fn thread_list_second_page_has_remaining_item_and_only_prev_link(pool: PgP
         );
     }
     assert!(
-        html.contains(r#"href="/?page=1""#),
+        html.contains(r#"href="/?q=&sort=created_desc&page=1""#),
         "2ページ目に「前に戻る」が無い"
     );
     assert!(!html.contains("次に進む"), "最終ページに「次に進む」は不可");
@@ -272,7 +277,7 @@ async fn thread_list_out_of_range_page_is_empty_not_404(pool: PgPool) {
         "スレッドが1件あるのに0件時の文言を出してはいけない"
     );
     assert!(!html.contains(r#"class="thread-card""#));
-    assert!(html.contains(r#"href="/?page=998""#));
+    assert!(html.contains(r#"href="/?q=&sort=created_desc&page=998""#));
     assert!(!html.contains("次に進む"));
 }
 

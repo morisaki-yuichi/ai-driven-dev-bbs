@@ -18,6 +18,14 @@
     color: #8a1020;
 }
 
+/* decision 0033: 失敗ではないが入力どおりに処理されなかったことを知らせる通知
+   (F11検索語の切り詰め等)。成功(緑)・失敗(赤)のどちらでもない第3の状態として、
+   色だけに依存せず文言と併用する(ui-ux-guidelines §4)。 */
+.message-warning {
+    background: #fff3cd;
+    color: #7a5b00;
+}
+
 .field {
     margin-bottom: 1rem;
 }

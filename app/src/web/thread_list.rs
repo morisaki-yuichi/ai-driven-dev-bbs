@@ -20,6 +20,10 @@
 //! 場合は詳細画面への導線に`#comment-{id}`フラグメントを付ける(AC11-3、D19)。
 //! フラグメント識別子はブラウザ標準機能でスクロールするため、decision 0008
 //! (JSなし)の範囲に収まる。
+//!
+//! **C-13**: ページ送りリンクは`q`・`sort`を保持したまま`page`だけを変える
+//! (`q`はURLクエリ値としてパーセントエンコードが要るため`web::params::encode_query_component`
+//! を通す。`sort`は`SortKey::as_query_value()`が返す固定のASCII文字列なので不要)。
 
 use std::collections::HashMap;
 
@@ -36,7 +40,7 @@ use crate::domain::query::{self, Hit};
 use crate::web::csrf::CsrfToken;
 use crate::web::error::AppError;
 use crate::web::format::format_created_at;
-use crate::web::params::ListParams;
+use crate::web::params::{ListParams, encode_query_component};
 use crate::web::views::CurrentUser;
 
 /// 一覧に描画する1件ぶんの行。`db::threads::SearchRow`をテンプレートが
@@ -79,9 +83,19 @@ struct ThreadListTemplate {
     /// (削除後はスレッド自体が404になり元の詳細画面へは戻れないため)。
     thread_deleted_message: Option<String>,
     /// F11: 検索窓の初期値(HTML属性値としてそのまま出す。Askamaが`"`等をHTMLエスケープする)。
+    /// トリム済み・`MAX_QUERY_LEN`以内に切り詰め済み(decision 0033、`ListParams::parse`)
+    /// ―― 実際に検索へ使った値と画面表示が一致する。
     q: String,
+    /// F11/C-13: ページ送りリンクの`q`(パーセントエンコード済み、URLクエリ値として使う)。
+    q_encoded: String,
+    /// C-13: ページ送りリンクの`sort`。`SortKey::as_query_value()`はASCII固定文字列
+    /// なのでエンコード不要。
+    sort_value: &'static str,
     /// F11: 検索中かどうか(`q`が空でないか)。空状態の文言分岐に使う。
     is_searching: bool,
+    /// decision 0033: `q`が`MAX_QUERY_LEN`を超えていたため切り詰められたかどうか。
+    /// 黙って切り詰めない ―― `true`のとき画面上に切り詰めが起きた旨を表示する。
+    q_truncated: bool,
 }
 
 /// GET /。`require_auth`ミドルウェア配下のルートなので、ここに到達した時点で
@@ -154,7 +168,10 @@ pub async fn show(
         // このページでは`has_next = false`なのでテンプレートは値を読まない。
         next_page: page.page_number.saturating_add(1),
         is_searching: !params.q.is_empty(),
+        q_encoded: encode_query_component(&params.q),
+        q_truncated: params.q_truncated,
         q: params.q,
+        sort_value: params.sort.as_query_value(),
     };
     match tmpl.render() {
         Ok(body) => Ok(Html(body).into_response()),
