@@ -1,0 +1,52 @@
+# セッションログ: 2026-07-20 #24 F04プロフィール編集(全12機能の実装完了)
+
+- フェーズ: 4（機能実装）
+- 今回やったこと:
+  - F04プロフィール編集（`feat/profile-edit`ブランチ、分岐元は`main`の`bfcf706`）を、オーケストレーション（S1状態復元 → G1スコープ承認 → S2証明+TDD実装 → S3レビュー → G3裁定 → 裁定反映）の流れで実装した。**このサイクルの完了により、このプロジェクトの全12機能（F01〜F12）の実装が完了した。**
+  - **G1でユーザーが承認したスコープ**:
+    - Leanはoperation-level定型ペア（`updateDisplayName_atomic`・`updateDisplayName_requires_auth`）を証明する。F01〜F12の各サイクルがこのペアを毎回証明してきており、`updateDisplayName`分だけが欠けていたための穴埋め。
+    - 横断的不変条件`displayName_propagates`はF12で証明済みのため再証明しない。
+    - Wf保存補題は今回のスコープ外（`displayName_propagates`の証明は「操作前にWfが成り立つ」ことしか使っておらず、F04のAC達成に不要と判断）。
+    - 実装は配線が中心。バリデーションは既存関数を再利用する。
+    - パスワード変更は実装しない（issue 04に「変更機能は不要」と明記）。
+    - 表示名の伝播を実データで確認する。
+    - フラッシュメッセージは既存パターンに倣う。
+  - **S2（証明＋TDD実装）**:
+    - `formal/Bbs/Invariant.lean`に`updateDisplayName_atomic`・`updateDisplayName_requires_auth`を追加し、新規`sorry`ゼロで証明した。
+    - 実装中に`formal/Bbs/Op.lean`の`updateDisplayName`が生の`match`（`some => fail` / `none => pure`）を使っており、F01で`register`が踏んだのと同じjoin point問題（`apply bind_noWriteOnError`の合成証明が`whnf`のdeterministic timeoutで詰まる）に遭遇した。`Action.guardNone`への書き換えで解決した。`Db.lean`のdocコメントがこの罠を警告しており、同じファイルで2度目の発現だった。
+    - S2の中で、`Op.lean`書き換え前の定義を`updateDisplayNameOld`として一時的に復元し、`updateDisplayName_old_eq_new`としてすべての`sid`・表示名・状態について外延的に等しいことをrfl（unfold + cases）レベルで証明し、書き換えの意味保存を確認した。sorryAx非依存。F01の前例（`Scenario.lean`のスモークチェックによる前後比較）より強い確認になっている。この検証用の定義・定理はセッション内の確認作業であり、最終的な`formal/`の差分には残っていない。
+    - 実装: `app/src/web/profile.rs`（新設、表示名編集フォームの表示・送信ハンドラ）、`app/templates/profile_edit.html`（新設）、`app/src/db/users.rs`に`update_display_name`（UPDATE）を追加、`app/src/domain/validation.rs`に`update_display_name_validation`（既存の`display_name_failure`・`trim`を使う薄いラッパ）を追加、`app/src/web/params.rs`に`ProfileEditForm`（CSRFトークン必須、decision 0021）を追加、`app/src/web/mod.rs`に`/profile/edit`（GET/POST）を`require_auth`配下のルートとして追加。
+  - **S3（レビュー）で重大は0件**。特筆すべき検証:
+    - 新規2定理（`updateDisplayName_atomic`・`updateDisplayName_requires_auth`）が`#print axioms`でsorryAx非依存であり、既存の同型定理（`logout_atomic`・`logout_requires_auth`）と同じ強さの言明であることを確認した（前提の追加や結論の弱化がない）。
+    - 変異テストで結合層の穴が判明した。変異A（UPDATEをno-op化）は結合テスト2件が検出したが、変異B（`where id = $2 or true`で全ユーザーを書き換える＝対象限定の破壊）は**結合スイート9件がすべて素通りし、DB単体テスト1本だけが検出した**。
+    - IDORの余地なし。フォームに`user_id`と`id`を混入させて送信する検証テストを実施し、A（本人）だけが改名されB（他人）は不変であることを確認した。serdeが未知フィールドを捨てるためmass assignmentも成立しない。
+    - XSSは`<svg/onload=1>`を実保存し、一覧2箇所・詳細3箇所・編集画面2箇所のすべてでエスケープを確認した。
+    - パスワード変更が実装されていないことを、フォーム・テンプレート・ルート・テストの4箇所で確認した。
+    - **S3が指摘した中の指摘**: 結合層に2ユーザーの分離ケースが無い（変異Bを素通りさせた原因）／`update_display_name`がrows_affectedを見ず存在しない`user_id`でも`Ok`を返す。
+  - **G3でユーザーが裁定し、以下を反映した**:
+    - 結合テストに2ユーザーの分離ケース（`post_profile_edit_does_not_change_other_users_display_name`、`app/tests/profile_edit_test.rs`）を追加。追加前に`app/src/db/users.rs`のUPDATE文を`where id = $2 or true`に一時的に壊し、追加したテストが実際に赤くなることを確認してから元に戻した（変異検出の実証）。
+    - `update_display_name`を`Result<bool, sqlx::Error>`に変更し、`rows_affected() > 0`で対象ユーザーの実在有無を検査するようにした。呼び出し元（`web/profile.rs::submit`）は戻り値を捨てているためユーザーに見える振る舞いは不変。存在しない`user_id`を渡すと`false`を返すことを確認する単体テストを追加した。
+    - 表示名の同名許容をdecision 0035として記録した（C-03が「重複可」と定めており、既存テスト`insert_allows_duplicate_display_names`も登録時の同名を明示的に許容している。ユーザーの同一性は一意な`unique_id`が担う点を明記）。
+    - `app/src/domain/validation.rs`の根拠を失った`#![allow(dead_code)]`を削除し（`cargo clippy --lib`が警告を出さないことを確認済み）、docコメント冒頭の連続空行を1行に整えた。
+    - `cargo test`（全結合テスト含め成功）、`cargo clippy --all-targets`（警告なし）、`cargo fmt`、`lake build`（`sorry`ゼロ・全シナリオpass）を確認。SQL文言自体は変更していないため`cargo sqlx prepare`は実行せず、`SQLX_OFFLINE=true cargo check`で既存`.sqlx`キャッシュが有効なことを確認した。
+    - `/verify`でホスト`cargo run`のアプリを実際に起動し、ユーザーA・Bを登録→ログイン→Aがスレッド作成→Aが改名→一覧・詳細への伝播（AC04-2）とBの表示名・プロフィール画面が一切変化しないことをHTTP経由で確認した。あわせてA自身の16文字バリデーション失敗が保存されず旧名を保つことも確認した。
+  - **G3で「反映しない」と裁定・見送りが確定した事項**（4件、一切手を加えていない）:
+    - `profile.rs::show()`のclone直後にmoveする書き方。
+    - AC04-2テストの`count()==3`の厳密一致。
+    - `?updated=1`を直接URLで叩くと成功メッセージが出る件（decision 0024の既存前例と同挙動）。
+    - `update_display_name_validation`が`register_validation`の末尾と逐語的に同一である件（意図的な複製で、登録時との一致が構造的に保証される）。
+- 決めたこと（関連 decision 番号があれば併記）:
+  - Leanの証明スコープはoperation-level定型ペアに限定し、Wf保存補題・横断不変条件の再証明はF04では行わない（G1、ユーザー承認）。
+  - 表示名の一意性は要求しない。他人と同じ表示名に改名することでなりすまし表示が技術的に可能だが、原典C-03（重複可）に忠実な意図的許容であり、同一性の識別は一意な`unique_id`が担う（decision 0035, importance=minor, decided_by=ai+user）。
+  - `update_display_name`の戻り値を`Result<bool, sqlx::Error>`にし、rows_affectedによる対象ユーザー実在検査を持たせる（G3裁定）。
+  - `Op.lean`の`updateDisplayName`は`Action.guardNone`で書く（生の`match`はjoin point問題でLean証明がtimeoutする）。
+- 次にやること:
+  - **持ち越し事項の専用サイクル**（次に着手する）: (1) 必須フィールド欠落POSTが403でなく422になる件（F05から6回連続で持ち越し）、(2) 未ログインで未知URLを踏んだ応答に`no-store`が付かない件。
+  - その後、**空DBからシナリオ01〜05の通し確認**（評価者経路`docker compose up`での最終検証。機能横断の通し確認は今回が初回になる）。
+  - `feat/profile-edit`ブランチのcommit・push（本セッションでは指示により未実施。次の別ステップで行う）。
+- 未解決事項:
+  - Wf保存補題の残件（`updateDisplayName`・`deleteComment`の保存補題と`runAll`への一般形）。今回のG1スコープ外として明示的に見送った。
+  - Leanの証明はRustを機械的に拘束しない。モデルと実装の対応は人手のレビューで維持されている（F12の変異テストで実証済み）。今回のF04でも同様に、変異テストが結合層の穴（分離ケース欠如）を発見した。
+  - 必須フィールド欠落POSTが403でなく422になる件（F05から6回連続で持ち越し、上記「次にやること」参照）。
+  - 未ログインで未知URLを踏んだ応答に`no-store`が付かない件（上記「次にやること」参照）。
+  - `feat/profile-edit`ブランチは未コミット。コミット・PRはこの後の別ステップで行う。
