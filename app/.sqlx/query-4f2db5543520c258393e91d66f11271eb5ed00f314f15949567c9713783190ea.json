@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update comments set deleted_at = now() where id = $1 and deleted_at is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4f2db5543520c258393e91d66f11271eb5ed00f314f15949567c9713783190ea"
+}

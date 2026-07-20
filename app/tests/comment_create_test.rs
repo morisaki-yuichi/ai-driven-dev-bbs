@@ -377,7 +377,9 @@ async fn thread_detail_has_no_edit_ui_for_posted_comment(pool: PgPool) {
     let csrf_token = csrf_token_from_cookie_header(&cookie_header);
 
     let app = bbs::web::build_router(pool.clone());
-    let title = "編集できないことの確認用コメント";
+    // 本文に「編集」という文字列を含めない(下の`comments_section`アサーションが
+    // コメント本文由来の偶然の一致を拾わないようにするため)。
+    let title = "投稿後の書き換え不可を確認する用のコメント";
     let create_response = app
         .oneshot(post_create_comment_request(
             tid,
@@ -420,7 +422,12 @@ async fn thread_detail_has_no_edit_ui_for_posted_comment(pool: PgPool) {
     }
 
     // コメント一覧領域(ヘッダーのログアウトフォーム・投稿フォームは範囲外)には、
-    // 状態変更の手段(decision 0021により全てPOST)が無い。
+    // 「編集」用の手段が無い(C-05/AC07-4)。F08(コメント削除)により自分のコメントに
+    // 削除フォーム・ボタンが正当に増えたため、「状態変更の手段が一切無い」という
+    // 以前の広いassert(`<form`/`<button`/`<input`の不在)はもう成り立たない
+    // ―― 削除は許可された操作であり、このassertを削除機能の実装で書き換えるのは
+    // 想定内(このテスト自身のdocコメントが検証したいのは「編集不可」であって
+    // 「削除も含めた一切の変更不可」ではない)。
     let comments_section_start = html
         .find(r#"aria-label="コメント一覧""#)
         .expect("comments section marker not found");
@@ -433,10 +440,24 @@ async fn thread_detail_has_no_edit_ui_for_posted_comment(pool: PgPool) {
         .find(r#"aria-label="コメント投稿""#)
         .unwrap_or(html.len());
     let comments_section = &html[comments_section_start..comments_section_end];
-    for control in ["<form", "<button", "<input"] {
-        assert!(
-            !comments_section.contains(control),
-            "コメント一覧に状態変更の手段 {control} があってはならない"
-        );
-    }
+    assert!(
+        !comments_section.contains("/edit"),
+        "コメント一覧に編集用のURL(/edit)があってはならない"
+    );
+    assert!(
+        !comments_section.contains("編集"),
+        "コメント一覧に「編集」という文言があってはならない"
+    );
+    // 削除フォームのaction自体は許可された操作だが、宛先が"/delete"であって
+    // "/edit"の別名になっていないことを確認する(表現の取り違え防止)。
+    // 末尾の"/delete"まで含めた完全なURLで絞る ―― `/threads/{tid}/comments/`だけだと
+    // 同じprefix配下の仮想的な編集エンドポイント(例:
+    // `/threads/{tid}/comments/{cid}/update`)でもassertが成立してしまい、
+    // 「編集用の手段が無い」の検証にならない(F08レビュー指摘)。
+    // コメントIDはHTTP経由で作ったので手元に無く、DB層から引き直す。
+    let cid = bbs::db::comments::list_by_thread(&pool, tid).await.unwrap()[0].id;
+    assert!(
+        comments_section.contains(&format!("/threads/{tid}/comments/{cid}/delete")),
+        "F08の削除フォームは自分のコメントに対して出るはず(宛先は/deleteで終わる)"
+    );
 }

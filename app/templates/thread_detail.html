@@ -5,14 +5,26 @@
 {% block content %}
 <p><a href="/">スレッド一覧へ戻る</a></p>
 
+{# F08: コメント削除結果のフラッシュ通知(decision 0024と同じクエリパラメータ方式)。
+   login.htmlと同じくaria-liveを通知の種別で切り替える(成功はpolite、失敗はassertive)。
+   success/errorが同時にSomeになることは無い(CommentDeleteNotice::messagesが保証)。 #}
+<div class="message-area"{% if delete_success_message.is_some() %} aria-live="polite"{% else %} role="alert" aria-live="assertive"{% endif %}>
+    {% if let Some(msg) = delete_success_message %}
+    <p class="message message-success">{{ msg }}</p>
+    {% endif %}
+    {% if let Some(msg) = delete_error_message %}
+    <p class="message message-error">{{ msg }}</p>
+    {% endif %}
+</div>
+
 <article class="thread-detail">
     <h1>{{ title }}</h1>
     <p class="post-body">{{ body }}</p>
     <p>{{ author_display_name }} さん・{{ created_at }}</p>
 </article>
 
-{# F06(スレッド削除)・F08(コメント削除)の「削除」ボタンはここに置かない
-   (ユーザー承認済みのスコープ ―― issue 10 のACのうちこの2点は今回実装しない)。 #}
+{# F06(スレッド削除)の「削除」ボタンはここに置かない
+   (ユーザー承認済みのスコープ ―― issue 10 のACのうちこの1点は今回実装しない)。 #}
 
 <section class="comments" aria-label="コメント一覧">
     <h2>コメント</h2>
@@ -26,6 +38,17 @@
     <article class="comment">
         <p class="post-body">{{ comment.body }}</p>
         <p>{{ comment.author_display_name }} さん・{{ comment.created_at }}</p>
+        {# F08 / AC08-3・AC08-4 / ui-ux-guidelines §1: 他人のコメント・削除済みの
+           コメントには削除ボタンを出さない(can_deleteが両方を判定済み)。
+           D18: 確認なし即削除(window.confirmは使わない、decision 0008/H-02)。 #}
+        {% if comment.can_delete %}
+        {% if let Some(user) = current_user %}
+        <form method="post" action="/threads/{{ thread_id }}/comments/{{ comment.id }}/delete" novalidate>
+            <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+            <button type="submit">削除</button>
+        </form>
+        {% endif %}
+        {% endif %}
     </article>
     {% endfor %}
     {% endif %}
