@@ -1,0 +1,46 @@
+{% extends "layout.html" %}
+
+{% block title %}プロフィール編集{% endblock %}
+
+{% block content %}
+<h1>プロフィール編集</h1>
+
+{# 共通メッセージエリア(common_layout.md §3 / ui-ux-guidelines §2・§4)。
+   login.htmlと同じ理由で、中身が空でも要素自体は常に置く(aria-liveが変化を検知するため)。
+   成功(?updated=1由来)と失敗(バリデーションエラー)は同時に出ない
+   (web/profile.rsのFormNoticeが型で保証している)ため、同じ領域に両方の分岐を並べてよい。
+   aria-liveは通知の種別で切り替える: 成功は割り込み優先度の低いpolite、失敗は
+   従来どおりassertive(login.htmlと同じ使い分け)。 #}
+<div class="message-area"{% if success_message.is_some() %} aria-live="polite"{% else %} role="alert" aria-live="assertive"{% endif %}>
+    {% if let Some(msg) = success_message %}
+    <p class="message message-success">{{ msg }}</p>
+    {% endif %}
+    {% if let Some(msg) = form_message %}
+    <p class="message message-error" id="form-error">{{ msg }}</p>
+    {% endif %}
+</div>
+
+{% if let Some(user) = current_user %}
+{# novalidate: ネイティブ検証バブルはagent-browserから読めないため無効化し、
+   検証はサーバ側に一本化する(decision 0023 / ui-ux-guidelines §6)。 #}
+<form method="post" action="/profile/edit" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+
+    <div class="field">
+        <label for="display_name">表示名</label>
+        {# maxlength: register.htmlの表示名欄と同じ理由(Why-not含め同ファイル参照)で
+           UTF-16コードユニット単位のクライアント側ヒントとして付ける。厳しい側にしか
+           丸めないので、コードポイント単位のサーバ側判定(唯一の正典)を緩めない。 #}
+        <input type="text" id="display_name" name="display_name" value="{{ display_name }}" required maxlength="15"{% if display_name_error.is_some() %} aria-invalid="true" aria-describedby="display_name_error"{% endif %}>
+        {% if let Some(msg) = display_name_error %}
+        <p class="field-error" id="display_name_error">{{ msg }}</p>
+        {% endif %}
+    </div>
+
+    {# issue 04: 「その他の情報(ユニークID、パスワードなど)の変更機能は不要」。
+       ここに他項目の入力欄・リンクを追加しないこと(formal/Bbs/Op.leanの
+       updateDisplayNameが表示名しか書き換えないことに対応)。 #}
+    <button type="submit">保存</button>
+</form>
+{% endif %}
+{% endblock %}

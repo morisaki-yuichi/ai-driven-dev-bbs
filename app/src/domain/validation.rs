@@ -4,9 +4,6 @@
 //! スレッド作成ハンドラ(web/thread_create.rs)が、`create_comment_validation`はF07
 //! コメント作成ハンドラ(web/thread_detail.rs)が使う。
 //!
-//! F04プロフィール編集のハンドラは foundation-plan.md §5の範囲外(機能実装フェーズ)
-//! のため、それまでの間 `dead_code` を抑止する。
-//!
 //! ### 文字数の数え方(decision 0003)
 //! 「15文字以内」「12文字以上」はUnicodeコードポイント数で数える。バイト数は誤り。
 //! Rustでは`str::len()`はバイト長を返すため、必ず`.chars().count()`を使う。
@@ -17,8 +14,6 @@
 //! U+3000・U+00A0を含め正しく判定することを実測で確認済み**(`str::trim()`は
 //! decision 0004の落とし穴テーブルにも「はい」と記載されている)。よって
 //! Lean側のような独自`isSpaceChar`は不要で、標準の`str::trim()`をそのまま使う。
-
-#![allow(dead_code)]
 
 use crate::domain::model::{PasswordWeakness, ValidationFailure};
 
@@ -169,6 +164,18 @@ pub fn create_comment_validation(body: &str) -> Result<String, ValidationFailure
         return Err(ValidationFailure::BodyEmpty);
     }
     Ok(trim(body))
+}
+
+/// F04プロフィール編集の検査: 表示名のみ(issue 04「その他の情報の変更機能は不要」)。
+/// `formal/Bbs/Op.lean`の`updateDisplayName`(`Action.guardNone`による表示名検査)と
+/// 一致させ、`updateDisplayName_atomic`/`updateDisplayName_requires_auth`
+/// (`formal/Bbs/Invariant.lean`)がオラクルとして参照した実装。
+/// 成功時はトリム済みの表示名を返す(decision 0004: 保存はトリム後の値)。
+pub fn update_display_name_validation(display_name: &str) -> Result<String, ValidationFailure> {
+    if let Some(failure) = display_name_failure(display_name) {
+        return Err(failure);
+    }
+    Ok(trim(display_name))
 }
 
 #[cfg(test)]
@@ -359,5 +366,32 @@ mod tests {
         // decision 0004: 保存はトリム後の値。
         let result = create_comment_validation(" コメント ");
         assert_eq!(result, Ok("コメント".to_string()));
+    }
+
+    #[test]
+    fn update_display_name_validation_accepts_nonempty_name_within_15_chars() {
+        let result = update_display_name_validation("新しい表示名");
+        assert_eq!(result, Ok("新しい表示名".to_string()));
+    }
+
+    #[test]
+    fn update_display_name_validation_rejects_empty_after_trim() {
+        // decision 0004: 全角スペースのみは「空」として扱う。
+        let result = update_display_name_validation("　　");
+        assert_eq!(result, Err(ValidationFailure::DisplayNameEmpty));
+    }
+
+    #[test]
+    fn update_display_name_validation_rejects_16_chars_after_trim() {
+        let too_long = "あいうえおかきくけこさしすせそた"; // 16コードポイント
+        let result = update_display_name_validation(too_long);
+        assert_eq!(result, Err(ValidationFailure::DisplayNameTooLong));
+    }
+
+    #[test]
+    fn update_display_name_validation_trims_name() {
+        // decision 0004: 保存はトリム後の値。
+        let result = update_display_name_validation(" テスト表示名 ");
+        assert_eq!(result, Ok("テスト表示名".to_string()));
     }
 }

@@ -6,6 +6,7 @@ pub mod login;
 pub mod logout;
 pub mod middleware;
 pub mod params;
+pub mod profile;
 pub mod register;
 pub mod thread_create;
 pub mod thread_detail;
@@ -64,6 +65,10 @@ pub fn build_router(pool: PgPool) -> Router {
         // 動的な"/threads/{id}/delete"は末尾のリテラルが異なるためaxum(matchit)が
         // 曖昧なく解決する。
         .route("/threads/{id}/delete", post(thread_detail::delete_thread))
+        // F04(プロフィール編集、issue 04)。P06、パスはdecision 0020で確定。
+        // 表示名の変更はログイン中のユーザー自身に限る(C-09)ので、他の認証必須
+        // ルートと同じくrequire_auth配下に置く。
+        .route("/profile/edit", get(profile::show).post(profile::submit))
         .route_layer(from_fn_with_state(pool.clone(), middleware::require_auth))
         // P01(ログイン)・P02(登録)は未ログインで到達できる(F01/F02)。
         .route("/register", get(register::show).post(register::submit))
