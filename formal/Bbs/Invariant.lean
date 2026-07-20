@@ -1523,10 +1523,66 @@ theorem deleteThread_needs_owner (db : Db) (sid : SessionId) (tid : ThreadId)
     (hne : t.authorId ≠ uid) :
     (deleteThread sid tid) db = (.error .forbidden, db) := by sorry
 
-/-- AC06-2: 削除済みコメントも件数に数える。 -/
+/-- C-06: コメントが1件でも紐づくスレッドは削除できない。認可（作成者本人）を
+    通った上でなお `.threadHasComments` で失敗し、状態は変わらない。
+    `deleteThread_blocked_by_deleted_comment`（AC06-2）はこの補題の
+    `c.deleted = true` への特殊化として得る。
+
+    restate後の言明が真であることの確認としてF06を待たずに証明した（当初は
+    証明本体をF06送りにする想定だったが、`ensure cs.isEmpty`が失敗する経路を
+    辿るだけで、既存の補題群で閉じた）。要点は`commentsOf`（`Op.lean`）が
+    `deleted`で絞らず全件を`filter`することで、削除済み・未削除のどちらでも
+    同じように`isEmpty`が偽になる。`Bbs.Scenario`の「AC06-2 コメント有り
+    (削除済み1+通常1)スレッドは削除不可」が同じことを具体例で確認している。 -/
+theorem deleteThread_blocked_by_any_comment (db : Db) (sid : SessionId) (tid : ThreadId)
+    (uid : UserId) (t : Thread) (c : Comment)
+    (hs : db.sessions.find? (·.id = sid) = some ⟨sid, uid⟩)
+    (ht : db.threads.find? (·.id = tid) = some t)
+    (hown : t.authorId = uid)
+    (hc : c ∈ db.comments) (hct : c.threadId = tid) :
+    (deleteThread sid tid) db = (.error .threadHasComments, db) := by
+  have hmem : c ∈ db.comments.filter (·.threadId = tid) := by
+    rw [List.mem_filter]
+    exact ⟨hc, by simp [hct]⟩
+  have hne : (db.comments.filter (·.threadId = tid)).isEmpty = false := by
+    cases hf : db.comments.filter (·.threadId = tid) with
+    | nil => rw [hf] at hmem; cases hmem
+    | cons a as => rfl
+  have hown' : decide (t.authorId = uid) = true := by simp [hown]
+  unfold deleteThread
+  simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+    Action.pure, Action.fail, Action.modify, requireAuth, findThread, Action.liftOption,
+    Op.commentsOf, hs, ht, hown', hne, ensure_true_eq, ensure_false_eq]
+
+/-- AC06-2: 削除済みコメントも件数に数える。
+
+    **F08のレビュー指摘を受けてrestateした。** 旧言明は
+    `∀ e s', (deleteThread sid tid) db = (.error e, s') → s' = db`
+    という形で、仮定`hc`/`hct`/`hcd`（「削除済みコメントがこのスレッドに存在する」
+    というAC06-2の状況設定そのもの）を**1つも使わなかった**。中身は
+    `deleteThread_atomic`（`NoWriteOnError`）の特殊化にすぎず、命題自体は真だが
+    **AC06-2について何も述べていない** ―― 証明しても「削除済みコメントが
+    スレッド削除を阻む」ことの保証にはならない（「失敗したなら状態が変わらない」と
+    「削除済みコメントがあるなら失敗する」は別の主張であり、前者は後者を含まない）。
+
+    AC06-2 が要求しているのは後者、すなわち**失敗すること自体**とその理由なので、
+    結論を「`.threadHasComments`で失敗する」へ改めた。認可（セッション・作成者本人）を
+    仮定に加えたのは、それが無いと`.notAuthenticated`/`.forbidden`での失敗と
+    区別できず、「コメントの存在が理由で拒否された」ことを言えないため。
+
+    `hcd`（削除済みであること）は証明には要らない ―― `commentsOf`（`Op.lean`）が
+    `deleted`で絞らないので、削除済みでも未削除でも同じ経路で拒否される。
+    **その「要らなさ」こそがAC06-2の内容**（削除済みコメントも件数に数える）なので、
+    一般形を`deleteThread_blocked_by_any_comment`として立て、AC06-2はその
+    削除済みケースへの特殊化として明示的に残す。 -/
 theorem deleteThread_blocked_by_deleted_comment (db : Db) (sid : SessionId) (tid : ThreadId)
-    (c : Comment) (hc : c ∈ db.comments) (hct : c.threadId = tid) (hcd : c.deleted = true) :
-    ∀ e s', (deleteThread sid tid) db = (.error e, s') → s' = db := by sorry
+    (uid : UserId) (t : Thread) (c : Comment)
+    (hs : db.sessions.find? (·.id = sid) = some ⟨sid, uid⟩)
+    (ht : db.threads.find? (·.id = tid) = some t)
+    (hown : t.authorId = uid)
+    (hc : c ∈ db.comments) (hct : c.threadId = tid) (hcd : c.deleted = true) :
+    (deleteThread sid tid) db = (.error .threadHasComments, db) :=
+  deleteThread_blocked_by_any_comment db sid tid uid t c hs ht hown hc hct
 
 /-! ### 6. 表示名の全投稿反映 (AC04-2)
 
