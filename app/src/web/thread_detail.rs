@@ -1,11 +1,11 @@
 //! GET /threads/{id} (P04スレッド詳細画面、F10・issues/10)・
 //! POST /threads/{id}/comments (F07コメント作成、issues/07)・
-//! POST /threads/{thread_id}/comments/{comment_id}/delete (F08コメント削除、issues/08)。
+//! POST /threads/{thread_id}/comments/{comment_id}/delete (F08コメント削除、issues/08)・
+//! POST /threads/{id}/delete (F06スレッド削除、issues/06)。
 //!
 //! **表示範囲(F10)は表示のみ**(ユーザー承認済みのスコープ)。issue 10 のACのうち
-//! 「自分のスレッドに削除ボタン(コメント0件の場合のみ)」はF06の範囲であり、
-//! ここでは実装しない(F06は本セッション時点でRust未実装のまま)。「自分の
-//! コメントに削除ボタン」はF08としてこのファイルで実装する。
+//! 「自分のスレッドに削除ボタン(コメント0件の場合のみ)」はF06としてこのファイルで
+//! 実装する。「自分のコメントに削除ボタン」はF08としてこのファイルで実装する。
 //!
 //! - スレッド削除は物理削除(decision 0014)なので、`threads`に行が無い ＝
 //!   「存在しない」「削除済み」のどちらも一律`DomainError::NotFound`(C-10)。
@@ -40,9 +40,31 @@
 //! クエリパラメータ経由のフラッシュ通知(decision 0024と同じ方式)で
 //! 画面上に観測可能なフィードバックを返す(ui-ux-guidelines §1・§2、H-12)。
 //!
+//! **F06(スレッド削除)**: `formal/Bbs/Op.lean`の`deleteThread`と同じ順序 ――
+//! `requireAuth`(ミドルウェア) → `findThread`(存在検査、無ければ404) →
+//! 作成者検査(他人のスレッドは`forbidden`) → `commentsOf`/空検査
+//! (`threadHasComments`。削除済みコメントも件数に数える、AC06-2) → 物理削除、で
+//! 判定する。`deleteThread_atomic`(decision 0002)・`deleteThread_needs_owner`・
+//! `deleteThread_blocked_by_any_comment`/`deleteThread_blocked_by_deleted_comment`
+//! (C-06/AC06-1〜AC06-2)がこの操作の対応する不変条件。
+//! **確認ダイアログは設けない**(コメント削除のD18/decision 0030に倣う。
+//! ただしスレッド削除は物理削除でコメント削除より取り返しがつかない ――
+//! それでも確認を挟まないのは、`window.confirm`がH-02(agent-browser操作性)を
+//! 害しdecision 0008(JSなし)とも非整合という理由がコメント削除の場合と
+//! 同様に成り立つため。issue 06のACも確認を必須にしていない)。
+//! 削除成功後はスレッド自体が404になるため`/threads/{id}`には戻れず、
+//! `/`(一覧、`web/thread_list.rs`)へ`?thread_deleted=1`付きでリダイレクトする
+//! (シナリオ02: 「一覧画面へリダイレクトされることを確認する」)。
+//! Forbidden/ThreadHasCommentsはスレッドがまだ存在するので`/threads/{id}`へ
+//! フラッシュ付きで戻す(F08と同じ観測可能性の方針、H-12)。
+//! TOCTOU対策は`db/threads.rs::delete`の条件付き1文+`rows_affected`判定に
+//! 委ねる ―― **所有者チェックはその1文に含めない**(所有権は作成後変わらず
+//! レース対象ではない。`db/threads.rs`冒頭のdocコメント参照)。
+//!
 //! POSTは`require_auth`配下に置く(`web/mod.rs`)。ログイン中のユーザーのみが
-//! コメント作成・削除可能(詳細要件)。二重送信抑止は実装しない(F01・F05の裁定を
-//! 踏襲。decision 0008のSSR/MPA前提に例外を作らないことを優先——session-logs参照)。
+//! コメント作成・削除・スレッド削除可能(詳細要件)。二重送信抑止は実装しない
+//! (F01・F05の裁定を踏襲。decision 0008のSSR/MPA前提に例外を作らないことを
+//! 優先——session-logs参照)。
 //!
 //! **ログイン中に404を踏んだときのヘッダー**: このハンドラは何もしない。
 //! 404ページを認証済みヘッダーで描き直すのは`web/middleware.rs`の
@@ -68,7 +90,7 @@ use crate::domain::validation::create_comment_validation;
 use crate::web::csrf::{CsrfForm, CsrfToken};
 use crate::web::error::AppError;
 use crate::web::format::format_created_at;
-use crate::web::params::{CreateCommentForm, DeleteCommentForm};
+use crate::web::params::{CreateCommentForm, DeleteCommentForm, DeleteThreadForm};
 use crate::web::views::CurrentUser;
 
 /// コメント一覧に描画する1件ぶんの行。本文は表示時点で固定文言への差し替えを
@@ -86,7 +108,9 @@ struct CommentItem {
 
 /// F08: `GET /threads/{id}`が受けるコメント削除結果のフラッシュ通知(decision 0024と
 /// 同じクエリパラメータ方式)。成功・失敗(forbidden/alreadyDeleted)の3値+通知なし。
+#[derive(Default)]
 enum CommentDeleteNotice {
+    #[default]
     None,
     Deleted,
     Forbidden,
@@ -126,6 +150,40 @@ impl CommentDeleteNotice {
     }
 }
 
+/// F06: `GET /threads/{id}`が受けるスレッド削除失敗結果のフラッシュ通知
+/// (`CommentDeleteNotice`と同じクエリパラメータ方式)。成功時はスレッド自体が
+/// 消えてこの画面に戻れないため、ここには失敗の2値+通知なししか無い
+/// (`CommentDeleteNotice::Deleted`に相当するものは無い)。
+#[derive(Default)]
+enum ThreadDeleteNotice {
+    #[default]
+    None,
+    Forbidden,
+    HasComments,
+}
+
+impl ThreadDeleteNotice {
+    /// `?thread_delete_error=forbidden|has_comments`を見る。`delete_thread`は
+    /// どちらか一方のみを付与する。
+    fn from_query(query: &HashMap<String, String>) -> Self {
+        match query.get("thread_delete_error").map(String::as_str) {
+            Some("forbidden") => Self::Forbidden,
+            Some("has_comments") => Self::HasComments,
+            _ => Self::None,
+        }
+    }
+
+    fn message(&self) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Forbidden => Some("このスレッドを削除する権限がありません。".to_string()),
+            Self::HasComments => {
+                Some("コメントが1件以上あるスレッドは削除できません。".to_string())
+            }
+        }
+    }
+}
+
 #[derive(Template)]
 #[template(path = "thread_detail.html")]
 struct ThreadDetailTemplate {
@@ -144,6 +202,12 @@ struct ThreadDetailTemplate {
     /// F08: コメント削除結果のフラッシュ通知(`CommentDeleteNotice::messages`)。
     delete_success_message: Option<String>,
     delete_error_message: Option<String>,
+    /// F06/AC06-1〜AC06-3/ui-ux-guidelines §1: ログイン中ユーザー自身の・
+    /// コメント0件(削除済み込み)のスレッドかどうか。削除ボタンの表示可否。
+    can_delete_thread: bool,
+    /// F06: スレッド削除失敗結果のフラッシュ通知(`ThreadDeleteNotice::message`)。
+    /// 成功時はこの画面自体に戻らない(`/`へリダイレクトするため)ので成功文言は無い。
+    thread_delete_error_message: Option<String>,
 }
 
 /// F07投稿フォームの再描画に要る状態。`comment_body`(入力保持)・`error`(検証結果)を
@@ -155,9 +219,19 @@ struct CommentFormState {
     error: Option<ValidationFailure>,
 }
 
+/// F08(コメント削除)・F06(スレッド削除)それぞれの結果フラッシュ通知を1組で扱う。
+/// `CommentFormState`と同じ理由(`render_detail`の引数を減らす、
+/// clippy::too_many_arguments)だけのまとめで、ドメインの意味的なまとまりではない。
+#[derive(Default)]
+struct DeleteNotices {
+    comment: CommentDeleteNotice,
+    thread: ThreadDeleteNotice,
+}
+
 /// 既に取得済みのスレッド行・コメント一覧から詳細画面を描画する。`show`(初期表示)・
 /// `submit`(F07投稿失敗時の再表示)の両方から呼ばれる共通の描画経路。
-/// `current_user_id`はF08の削除ボタン表示可否(`CommentItem::can_delete`)の判定に使う。
+/// `current_user_id`はF08の削除ボタン表示可否(`CommentItem::can_delete`)・
+/// F06の削除ボタン表示可否(`can_delete_thread`)の判定に使う。
 async fn render_detail(
     pool: &PgPool,
     id: i64,
@@ -165,9 +239,15 @@ async fn render_detail(
     current_user: CurrentUser,
     current_user_id: i64,
     comment_form: CommentFormState,
-    delete_notice: CommentDeleteNotice,
+    delete_notices: DeleteNotices,
 ) -> Result<Response, AppError> {
     let comment_rows = db::comments::list_by_thread(pool, id).await?;
+    // F06/AC06-1〜AC06-2: 削除ボタンを出せるのは「自分のスレッド」かつ「コメント
+    // 0件(削除済みも数える、C-06)」のときだけ。`list_by_thread`は削除済みコメントも
+    // 含めて返す(`db/comments.rs`のdocコメント参照)ので、この時点での件数が
+    // そのままAC06-2が要求する判定になる ―― `deleteThread`(`formal/Bbs/Op.lean`)の
+    // `commentsOf`(削除済みも含めてfilter)と同じ基準。
+    let can_delete_thread = thread.author_id == current_user_id && comment_rows.is_empty();
     let comments = comment_rows
         .into_iter()
         .map(|c| CommentItem {
@@ -207,7 +287,8 @@ async fn render_detail(
     }
     let comment_form_message = error_present
         .then(|| "コメントを投稿できませんでした。入力内容を確認してください。".to_string());
-    let (delete_success_message, delete_error_message) = delete_notice.messages();
+    let (delete_success_message, delete_error_message) = delete_notices.comment.messages();
+    let thread_delete_error_message = delete_notices.thread.message();
 
     let tmpl = ThreadDetailTemplate {
         current_user: Some(current_user),
@@ -222,14 +303,18 @@ async fn render_detail(
         comment_error: comment_error_msg,
         delete_success_message,
         delete_error_message,
+        can_delete_thread,
+        thread_delete_error_message,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
 
 /// GET /threads/{id}。`require_auth`配下(`web/mod.rs`)なので`AuthenticatedUser`が
 /// 必ず存在する(C-09: 未ログインは一律`/login`へリダイレクト)。
-/// `query`はF08(コメント削除)の結果フラッシュ(`?comment_deleted=1`等、decision 0024と
-/// 同じ方式)を`delete_comment`のリダイレクト先として読み取る。
+/// `query`はF08(コメント削除)の結果フラッシュ(`?comment_deleted=1`等)・
+/// F06(スレッド削除)の失敗結果フラッシュ(`?thread_delete_error=...`)を
+/// (いずれもdecision 0024と同じ方式で)`delete_comment`/`delete_thread`の
+/// リダイレクト先として読み取る。
 pub async fn show(
     State(pool): State<PgPool>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -249,7 +334,10 @@ pub async fn show(
         .await?
         .ok_or(DomainError::NotFound)?;
 
-    let delete_notice = CommentDeleteNotice::from_query(&query);
+    let delete_notices = DeleteNotices {
+        comment: CommentDeleteNotice::from_query(&query),
+        thread: ThreadDeleteNotice::from_query(&query),
+    };
     render_detail(
         &pool,
         id,
@@ -257,7 +345,7 @@ pub async fn show(
         current_user,
         user.user_id,
         CommentFormState::default(),
-        delete_notice,
+        delete_notices,
     )
     .await
 }
@@ -285,6 +373,11 @@ pub async fn create_comment(
     // (critical: 1リクエスト=1トランザクション)の趣旨どおり、読み取りを含めて
     // ハンドラの副作用はこの1トランザクションに収める。
     //
+    // **ただしトランザクションに入れるだけでは閉じない**(F06レビューで実測):
+    // 素の`select`は行をロックしないので、「在る」と読んだ後に削除が確定し、
+    // `insert`のFK検査が23503を投げる経路が残る。`for share`版で読み、削除側の
+    // `for update`と直列化させる(`db/threads.rs::find_by_id_for_share`参照)。
+    //
     // render_detail(バリデーション失敗時の再描画)は`&PgPool`を要求するため、
     // トランザクションとは別にpoolのクローンを渡す(PgPoolのクローンは内部Arcの
     // 複製で安価)。再描画はSELECTのみでこのトランザクションへの書き込みは
@@ -293,7 +386,7 @@ pub async fn create_comment(
     db::with_transaction(&pool, move |mut tx| async move {
         // `formal/Bbs/Op.lean`の`createComment`と同じ順序: requireAuth(ミドルウェア) →
         // findThread(スレッド存在検査、無ければ404) → 本文空検査。
-        let thread = db::threads::find_by_id(&mut *tx, id)
+        let thread = db::threads::find_by_id_for_share(&mut *tx, id)
             .await?
             .ok_or(DomainError::NotFound)?;
 
@@ -310,7 +403,7 @@ pub async fn create_comment(
                         body: form.body,
                         error: Some(failure),
                     },
-                    CommentDeleteNotice::None,
+                    DeleteNotices::default(),
                 )
                 .await?;
                 return Ok((response, tx));
@@ -390,6 +483,66 @@ pub async fn delete_comment(
                 "/threads/{thread_id}?comment_delete_error=already_deleted"
             ))
             .into_response()
+        };
+        Ok((response, tx))
+    })
+    .await
+}
+
+/// POST /threads/{id}/delete。AC06-1〜AC06-4。
+///
+/// `formal/Bbs/Op.lean`の`deleteThread`と同じ順序で判定する:
+/// `requireAuth`(ミドルウェア) → `findThread`(存在検査、無ければ404) →
+/// 作成者検査(他人のスレッドは`forbidden`) → コメント有無検査
+/// (`threadHasComments`、削除済みも数える) → 物理削除。Forbidden/
+/// ThreadHasCommentsは`?`で`AppError`へ伝播させず、この関数が直接
+/// `/threads/{id}`へのフラッシュ付きリダイレクトを返す(F08の`delete_comment`と
+/// 同じ方針、`web/error.rs`の一律400フォールバックに頼らない)。
+///
+/// **所有者チェックとコメント有無チェックの非対称**(このファイル冒頭の
+/// docコメント・`db/threads.rs`冒頭のdocコメント参照): 所有者チェックはここ
+/// (web層、`find_by_id`が返した`author_id`との比較)で行い、`db::threads::delete`の
+/// 原子文には含めない ―― スレッドの所有権は作成後変わらない(譲渡機能なし)ので
+/// レース対象ではない。**コメント有無だけ**が他トランザクションとの競合対象なので、
+/// `db::threads::delete`の`not exists`サブクエリで原子的に判定する
+/// (TOCTOU対策、`db/comments.rs::delete`と同じ形)。
+///
+/// **確認ダイアログは設けない**(D18/decision 0030と同じ裁定をスレッド削除にも
+/// 適用する。このファイル冒頭のdocコメント参照)。
+///
+/// 削除成功後はスレッド自体が消えて`/threads/{id}`が404になるため、
+/// `/`(一覧)へ`?thread_deleted=1`付きでリダイレクトする(シナリオ02)。
+pub async fn delete_thread(
+    State(pool): State<PgPool>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(raw_id): Path<String>,
+    CsrfForm(_form): CsrfForm<DeleteThreadForm>,
+) -> Result<Response, AppError> {
+    let id: i64 = raw_id.parse().map_err(|_| DomainError::NotFound)?;
+
+    db::with_transaction(&pool, move |mut tx| async move {
+        // レビュー指摘: 素の`find_by_id`ではなく`for update`版でスレッド行をロックする。
+        // ロックしないと`db::threads::delete`の`not exists`が同時挿入を取りこぼし、
+        // FK違反(23503)で500になる(実測済み。`db/threads.rs::find_by_id_for_update`の
+        // docコメント参照)。所有者検査のためにどのみちこの行を読むので、追加コストは
+        // ロックのみ。
+        let thread = db::threads::find_by_id_for_update(&mut *tx, id)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+
+        if thread.author_id != user.user_id {
+            let response = Redirect::to(&format!("/threads/{id}?thread_delete_error=forbidden"))
+                .into_response();
+            return Ok((response, tx));
+        }
+
+        let deleted = db::threads::delete(&mut *tx, id).await?;
+        let response = if deleted {
+            Redirect::to("/?thread_deleted=1").into_response()
+        } else {
+            // 所有者チェックは通ったが`delete`が0行 ＝ この検査の後(あるいは
+            // そもそもの時点で)コメントが存在した(AC06-2、TOCTOU対策)。
+            Redirect::to(&format!("/threads/{id}?thread_delete_error=has_comments")).into_response()
         };
         Ok((response, tx))
     })

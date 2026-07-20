@@ -60,6 +60,11 @@ struct ThreadListTemplate {
     /// C-12: 最終ページでは出さない。
     has_next: bool,
     next_page: u32,
+    /// F06/decision 0024と同じクエリパラメータ方式: スレッド削除成功後の
+    /// リダイレクト先(`?thread_deleted=1`、`web/thread_detail.rs::delete_thread`)が
+    /// このフラッシュ通知を出す。削除は`/threads/{id}`ではなくここに戻ってくる
+    /// (削除後はスレッド自体が404になり元の詳細画面へは戻れないため)。
+    thread_deleted_message: Option<String>,
 }
 
 /// GET /。`require_auth`ミドルウェア配下のルートなので、ここに到達した時点で
@@ -101,6 +106,12 @@ pub async fn show(
     let has_any_threads = !items.is_empty();
     let page = query::paginate(params.page, items);
 
+    // F06: スレッド削除成功後のフラッシュ(`?thread_deleted=1`、値は問わずキーの
+    // 有無のみ、decision 0024と同じ方式)。
+    let thread_deleted_message = raw_params
+        .contains_key("thread_deleted")
+        .then(|| "スレッドを削除しました。".to_string());
+
     let tmpl = ThreadListTemplate {
         current_user: Some(CurrentUser {
             display_name: user.display_name,
@@ -111,6 +122,7 @@ pub async fn show(
         has_prev: page.has_prev,
         prev_page: page.page_number.saturating_sub(1),
         has_next: page.has_next,
+        thread_deleted_message,
         // Why: `?page=4294967295`(u32::MAX)は`ListParams::parse`を素通りするため、
         // 素の`+ 1`はdebugビルドで算術オーバーフローのpanicになる(＝クエリ文字列から
         // ハンドラを落とせる)。`prev_page`側の`saturating_sub`と対称に飽和させる。

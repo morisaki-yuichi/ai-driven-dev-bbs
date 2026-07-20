@@ -5,6 +5,17 @@
 {% block content %}
 <h1>スレッド一覧</h1>
 
+{# F06: スレッド削除成功後のフラッシュ通知(decision 0024と同じクエリパラメータ方式)。
+   `web/thread_detail.rs::delete_thread`が`/?thread_deleted=1`へリダイレクトする
+   ―― 削除後はスレッド自体が404になり元の詳細画面には戻れないため、一覧側に
+   通知を出す。空でも要素自体は常に置く(thread_detail.htmlの共通メッセージエリアと
+   同じ理由、aria-liveが変化を検知するため)。 #}
+<div class="message-area" aria-live="polite">
+    {% if let Some(msg) = thread_deleted_message %}
+    <p class="message message-success">{{ msg }}</p>
+    {% endif %}
+</div>
+
 {# P03の主要要素の1つ(dev-docs/requirements-analysis.md §1.3)。P05(スレッド作成)への
    唯一の導線であり、hoverでのみ現れる等の隠し要素にしない(ui-ux-guidelines §6)。 #}
 <p><a href="/threads/new">新規スレッド作成</a></p>

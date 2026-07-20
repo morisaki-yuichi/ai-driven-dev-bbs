@@ -129,6 +129,21 @@ impl HasCsrfToken for DeleteCommentForm {
     }
 }
 
+/// POST /threads/{id}/delete のフォーム(F06)。`DeleteCommentForm`と同じ理由
+/// (decision 0030と同型の裁定。スレッド削除は確認ダイアログを設けない、
+/// `web/thread_detail.rs::delete_thread`のdocコメント参照)でボタン以外に
+/// 入力欄は無い。decision 0021によりCSRFトークンは必須で持つ。
+#[derive(Debug, Deserialize)]
+pub struct DeleteThreadForm {
+    pub csrf_token: String,
+}
+
+impl HasCsrfToken for DeleteThreadForm {
+    fn csrf_token(&self) -> &str {
+        &self.csrf_token
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListParams {
     /// 空文字列は「全件表示」(decision 0011: containsSubstr s "" = true)。
