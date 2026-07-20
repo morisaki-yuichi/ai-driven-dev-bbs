@@ -420,4 +420,54 @@ mod tests {
         assert!(first, "先に削除を確定させた側は`true`");
         assert!(!second, "競り負けた側は`false`(AlreadyDeletedへ倒れる)");
     }
+
+    /// 持ち越し事項(1): 対象限定を壊す変異(`where`を`or true`等にする)の検出層。
+    /// これまでのテストはいずれもDB内に対象コメント1件しか無い状態で検証しており、
+    /// 「削除対象**以外**が生存すること」を確認していなかった(F04で結合層に見つかった
+    /// 同種の穴と同じパターン)。犠牲オブジェクト(同一スレッド内の2件目のコメント)を
+    /// 用意し、削除後もそれが未削除のまま残っていることを見る。
+    #[sqlx::test]
+    async fn delete_does_not_affect_another_comment_in_the_same_thread(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = crate::db::threads::insert(&pool, uid, "タイトル", "本文")
+            .await
+            .unwrap();
+        let target = insert(&pool, tid, uid, "削除される本文").await.unwrap();
+        let victim = insert(&pool, tid, uid, "無関係なコメント").await.unwrap();
+
+        assert!(delete(&pool, target).await.unwrap());
+
+        let target_ownership = find_ownership(&pool, target).await.unwrap().unwrap();
+        assert!(target_ownership.deleted);
+        let victim_ownership = find_ownership(&pool, victim).await.unwrap().unwrap();
+        assert!(
+            !victim_ownership.deleted,
+            "同一スレッド内の無関係なコメントが巻き添えで削除されてはならない"
+        );
+    }
+
+    /// 持ち越し事項(1)続き: 犠牲オブジェクトを**別スレッド**に置いた版。同一スレッド内の
+    /// ケースだけでは`where thread_id = ...`のような条件を見落とす変異を検出できない
+    /// (このコメント削除は`thread_id`で絞っていないが、将来の変更でスコープを広げる
+    /// 際の回帰として固定する価値がある)。
+    #[sqlx::test]
+    async fn delete_does_not_affect_a_comment_in_another_thread(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid1 = crate::db::threads::insert(&pool, uid, "スレッド1", "本文")
+            .await
+            .unwrap();
+        let tid2 = crate::db::threads::insert(&pool, uid, "スレッド2", "本文")
+            .await
+            .unwrap();
+        let target = insert(&pool, tid1, uid, "削除される本文").await.unwrap();
+        let victim = insert(&pool, tid2, uid, "無関係なコメント").await.unwrap();
+
+        assert!(delete(&pool, target).await.unwrap());
+
+        let victim_ownership = find_ownership(&pool, victim).await.unwrap().unwrap();
+        assert!(
+            !victim_ownership.deleted,
+            "別スレッドの無関係なコメントが巻き添えで削除されてはならない"
+        );
+    }
 }
