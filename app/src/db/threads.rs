@@ -29,6 +29,13 @@
 //! `order by`は、その再整列に入る前の**決定的な初期順序**を与えるためだけにある
 //! ―― 行の集合さえ同じなら整列後の結果は初期順序に依らないが、順序の付かない
 //! `select`を後段に渡すのは避ける。
+//!
+//! `order by threads.created_at desc, threads.id asc`のタイブレークが**id昇順**
+//! なのは、`domain::query::sort_thread_fields`とLeanの`leOf`が全キーで
+//! 「主キー → id**昇順**」の辞書式を採るため(F12レビューで`id desc`から訂正)。
+//! decision 0029の通り1トランザクション内では`now()`が同値になりうるので、
+//! `created_at`が同値の2件でSQL側とRust側のタイブレークが逆を向く状況は
+//! 実際に到達可能だった。
 
 use sqlx::PgExecutor;
 
@@ -154,7 +161,7 @@ where
                   and c2.body like $1 escape '\'
            )
         group by threads.id, users.display_name, hit.comment_id
-        order by threads.created_at desc, threads.id desc
+        order by threads.created_at desc, threads.id asc
         "#,
         pattern,
         is_search,
