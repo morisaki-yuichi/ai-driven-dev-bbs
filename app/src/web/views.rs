@@ -9,6 +9,7 @@
 /// フィールドに分けると、「ログイン中ヘッダーを描画するのにトークンは空文字」という
 /// 状態を型が許してしまい、そのページのログアウトボタンは必ず403になる。
 /// 1つの構造体にまとめることで、その組み合わせを表現できなくする。
+#[derive(Debug, Clone)]
 pub struct CurrentUser {
     pub display_name: String,
     pub csrf_token: String,

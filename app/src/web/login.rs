@@ -177,7 +177,7 @@ pub async fn submit(
         tokio::task::spawn_blocking(move || db::password::verify(&password, &password_hash))
             .await
             .map_err(|e| {
-                AppError::Internal(format!("password verification task panicked: {e}"))
+                AppError::internal(format!("password verification task panicked: {e}"))
             })??;
 
     // ID不存在とパスワード不一致は同一のInvalidCredentialsに潰す(AC02-3)。

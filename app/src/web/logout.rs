@@ -34,8 +34,8 @@ pub async fn submit(
     // Why-notと同じ理由: 到達不能であることと握り潰してよいことは別)。
     let session_id = jar.get(SESSION_COOKIE_NAME).map(|c| c.value().to_string());
     let Some(session_id) = session_id else {
-        return Err(AppError::Internal(
-            "POST /logout reached require_auth without a session cookie".to_string(),
+        return Err(AppError::internal(
+            "POST /logout reached require_auth without a session cookie",
         ));
     };
 

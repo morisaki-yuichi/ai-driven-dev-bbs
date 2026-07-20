@@ -72,7 +72,7 @@ mod tests {
             assert_eq!(visible_inside, 1);
             // 書き込んだ「後で」失敗する経路。書き込み前に失敗するなら
             // ロールバックの有無は観測できず、テストの意味が無い。
-            Err(AppError::Internal("deliberate failure".to_string()))
+            Err(AppError::internal("deliberate failure"))
         })
         .await;
 
