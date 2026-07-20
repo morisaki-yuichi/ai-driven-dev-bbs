@@ -1,5 +1,6 @@
 pub mod password;
 pub mod sessions;
+pub mod threads;
 pub mod transaction;
 pub mod users;
 

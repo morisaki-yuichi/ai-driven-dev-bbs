@@ -84,6 +84,22 @@ impl HasCsrfToken for LogoutForm {
     }
 }
 
+/// POST /threads/new のフォーム(P05)。decision 0021によりCSRFトークンを必須で持つ。
+/// タイトル・本文は機微情報ではないため`RegisterForm`/`LoginForm`と異なり
+/// `#[derive(Debug)]`をそのまま使う(`LogoutForm`と同じ扱い)。
+#[derive(Debug, Deserialize)]
+pub struct CreateThreadForm {
+    pub title: String,
+    pub body: String,
+    pub csrf_token: String,
+}
+
+impl HasCsrfToken for CreateThreadForm {
+    fn csrf_token(&self) -> &str {
+        &self.csrf_token
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListParams {
     /// 空文字列は「全件表示」(decision 0011: containsSubstr s "" = true)。

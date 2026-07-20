@@ -6,6 +6,7 @@ pub mod logout;
 pub mod middleware;
 pub mod params;
 pub mod register;
+pub mod thread_create;
 pub mod thread_list;
 pub mod views;
 
@@ -34,6 +35,12 @@ pub fn build_router(pool: PgPool) -> Router {
         // F03: formal/Bbs/Op.leanの`logout`が`requireAuth`を先に呼ぶ定義に
         // 合わせ、"/logout"もここ(require_authより前に登録されたルート)に置く。
         .route("/logout", post(logout::submit))
+        // "/threads/new" はP05(スレッド作成画面)。詳細要件によりログイン中の
+        // ユーザーのみ作成可能(F05)。
+        .route(
+            "/threads/new",
+            get(thread_create::show).post(thread_create::submit),
+        )
         .route_layer(from_fn_with_state(pool.clone(), middleware::require_auth))
         // P01(ログイン)・P02(登録)は未ログインで到達できる(F01/F02)。
         .route("/register", get(register::show).post(register::submit))

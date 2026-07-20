@@ -1,0 +1,44 @@
+{% extends "layout.html" %}
+
+{% block title %}スレッド作成{% endblock %}
+
+{% block content %}
+<h1>スレッド作成</h1>
+
+{# 共通メッセージエリア(common_layout.md §3 / ui-ux-guidelines §2・§4)。
+   register.htmlと同じく、空でも要素自体は常に置く(aria-liveが変化を検知するため)。 #}
+<div class="message-area" role="alert" aria-live="assertive">
+    {% if let Some(msg) = form_message %}
+    <p class="message message-error">{{ msg }}</p>
+    {% endif %}
+</div>
+
+{% if let Some(user) = current_user %}
+{# novalidate: ネイティブ検証バブルはagent-browserから読めないため無効化し、
+   検証はサーバ側に一本化する(decision 0023 / ui-ux-guidelines §6)。 #}
+<form method="post" action="/threads/new" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+
+    <div class="field">
+        <label for="title">タイトル</label>
+        <input type="text" id="title" name="title" value="{{ title }}" required{% if title_error.is_some() %} aria-invalid="true" aria-describedby="title_error"{% endif %}>
+        {% if let Some(msg) = title_error %}
+        <p class="field-error" id="title_error">{{ msg }}</p>
+        {% endif %}
+    </div>
+
+    <div class="field">
+        <label for="body">本文</label>
+        <textarea id="body" name="body" rows="8" required{% if body_error.is_some() %} aria-invalid="true" aria-describedby="body_error"{% endif %}>{{ body }}</textarea>
+        {% if let Some(msg) = body_error %}
+        <p class="field-error" id="body_error">{{ msg }}</p>
+        {% endif %}
+    </div>
+
+    {# C-05 / AC05-4: 作成後にタイトル・本文を編集するUIは存在しない。ここに
+       編集用のボタン・リンクを追加しないこと(formal/Bbs/Op.leanにスレッド更新
+       操作が無いことに対応)。 #}
+    <button type="submit">作成</button>
+</form>
+{% endif %}
+{% endblock %}
