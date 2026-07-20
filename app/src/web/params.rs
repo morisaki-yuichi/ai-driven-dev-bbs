@@ -3,10 +3,7 @@
 //! `SortKey`自体はdomain/query.rs(Bbs.Query.SortKeyの対応先)が持ち、ここではHTTPの
 //! クエリ文字列をその型へ変換するパースのみを担う。
 //!
-//! 呼び出し元(F09/F11/F12のスレッド一覧ハンドラ)はfoundation-plan.md §5の範囲外
-//! (機能実装フェーズ)のため、それまでの間 `dead_code` を抑止する。
-
-#![allow(dead_code)]
+//! 呼び出し元はF09/F11(`web/thread_list.rs::show`)。
 
 use std::collections::HashMap;
 
@@ -144,10 +141,45 @@ impl HasCsrfToken for DeleteThreadForm {
     }
 }
 
+/// クエリ文字列の値として安全な形にパーセントエンコードする
+/// (`&`・`=`・`%`・空白・非ASCIIなどをURL上意味を持たない`%XX`表現に変換)。
+///
+/// F11検索窓の`q`をC-13のページ送りリンク(`/?q=...&sort=...&page=...`)へ埋め込む際に使う。
+/// テンプレート側の静的な`&`(パラメータ区切り)と違い、`q`自体に`&`・`=`が
+/// 含まれうる(例: `A&B`というキーワード)ため、埋め込む前にエンコードしないと
+/// URLのパラメータ境界が壊れる。専用crateを増やさず`encodeURIComponent`相当
+/// (英数字と`-_.~`以外は全て`%XX`)の最小実装にする。
+///
+/// バイト単位でエンコードする(コードポイント単位ではない) ―― UTF-8の複数バイト文字は
+/// バイトごとに`%XX`化されるのがURLパーセントエンコーディングの仕様どおりの挙動。
+pub fn encode_query_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// decision 0033: 検索語`q`の上限（コードポイント数、decision 0003と同じ数え方）。
+/// `LIKE`の全走査コストと、C-13のページ送りリンクへの重複展開(パーセントエンコードで
+/// 最大3倍長)が入力長に比例して膨張するのを防ぐ。シナリオが使う長さ(数文字〜十数文字)を
+/// 大きく超える参考値であり、実測に基づく値ではない(decision 0033 §提案)。
+pub const MAX_QUERY_LEN: usize = 200;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListParams {
+    /// トリム済み・`MAX_QUERY_LEN`以内に切り詰め済み(decision 0033)。
     /// 空文字列は「全件表示」(decision 0011: containsSubstr s "" = true)。
     pub q: String,
+    /// `q`が`MAX_QUERY_LEN`を超えていたため切り詰めたかどうか(decision 0033)。
+    /// 呼び出し側(`web/thread_list.rs`)がこれを見て、切り詰めが起きた旨を
+    /// 画面上に明示する(黙って切り詰めない、ui-ux-guidelines §1)。
+    pub q_truncated: bool,
     pub sort: SortKey,
     /// 1始まり。不正な値(0以下・非数値)は1ページ目に丸める(decision 0013)。
     pub page: u32,
@@ -155,7 +187,17 @@ pub struct ListParams {
 
 impl ListParams {
     pub fn parse(raw: &HashMap<String, String>) -> Self {
-        let q = raw.get("q").cloned().unwrap_or_default();
+        let raw_q = raw.get("q").cloned().unwrap_or_default();
+        // decision 0033: 本文・コメント本文は保存時にトリムされる(decision 0004)ため、
+        // 検索語もトリムしないと末尾空白付きの入力が原理的に一致しなくなる。
+        // `domain::validation::trim`(decision 0004で確立済みの実装、全角スペース・
+        // NBSPを含め正しく判定する)をそのまま再利用する。
+        let trimmed = crate::domain::validation::trim(&raw_q);
+        let (q, q_truncated) = if trimmed.chars().count() > MAX_QUERY_LEN {
+            (trimmed.chars().take(MAX_QUERY_LEN).collect(), true)
+        } else {
+            (trimmed, false)
+        };
         let sort = SortKey::parse(raw.get("sort").map(String::as_str));
         // Why-not: `parse::<i64>()`で受けてから`as u32`で落とさない。`as`は
         // 黙って下位32bitに切り詰めるため、`?page=4294967296`(2^32)が`0`に化けて
@@ -167,13 +209,42 @@ impl ListParams {
             .and_then(|s| s.parse::<u32>().ok())
             .filter(|&n| n >= 1)
             .unwrap_or(1);
-        Self { q, sort, page }
+        Self {
+            q,
+            q_truncated,
+            sort,
+            page,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// C-13: `&`・`=`はページ送りリンクのパラメータ境界を壊すので必ずエンコードされる。
+    #[test]
+    fn encode_query_component_escapes_ampersand_and_equals() {
+        assert_eq!(encode_query_component("A&B=C"), "A%26B%3DC");
+    }
+
+    /// 空白・`#`もURL上意味を持つ・持ちうる文字なのでエンコードされる。
+    #[test]
+    fn encode_query_component_escapes_space_and_hash() {
+        assert_eq!(encode_query_component("A B#C"), "A%20B%23C");
+    }
+
+    /// 英数字と`-_.~`はエンコードしない(`encodeURIComponent`と同じ保守的な非予約文字集合)。
+    #[test]
+    fn encode_query_component_keeps_unreserved_characters_as_is() {
+        assert_eq!(encode_query_component("Rust-1_2.3~4"), "Rust-1_2.3~4");
+    }
+
+    /// 非ASCII(日本語)はUTF-8バイト列単位で`%XX`化される。
+    #[test]
+    fn encode_query_component_encodes_non_ascii_by_utf8_bytes() {
+        assert_eq!(encode_query_component("検索"), "%E6%A4%9C%E7%B4%A2");
+    }
 
     fn params(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -261,5 +332,55 @@ mod tests {
             let p = ListParams::parse(&params(&[("page", page)]));
             assert_eq!(p.page, 1, "page={page} should clamp to 1");
         }
+    }
+
+    /// decision 0033: 保存された本文はトリム済み(decision 0004)なので、検索語も
+    /// 同じくトリムしないと末尾空白付きの入力が原理的に一致しなくなる。
+    #[test]
+    fn q_is_trimmed_like_body_and_display_name() {
+        let p = ListParams::parse(&params(&[("q", "  Rust  ")]));
+        assert_eq!(p.q, "Rust");
+        assert!(!p.q_truncated);
+    }
+
+    /// decision 0033: 全角スペースのみの検索語もトリムすると空文字列になり、
+    /// 空クエリ(decision 0011: 全件表示)と同じ扱いになる。
+    #[test]
+    fn q_of_only_fullwidth_space_trims_to_empty() {
+        let p = ListParams::parse(&params(&[("q", "　　")]));
+        assert_eq!(p.q, "");
+        assert!(!p.q_truncated);
+    }
+
+    /// decision 0033: トリム後ちょうど`MAX_QUERY_LEN`は切り詰めの対象ではない。
+    #[test]
+    fn q_at_max_len_is_not_truncated() {
+        let q = "あ".repeat(MAX_QUERY_LEN);
+        let p = ListParams::parse(&params(&[("q", &q)]));
+        assert_eq!(p.q.chars().count(), MAX_QUERY_LEN);
+        assert!(!p.q_truncated);
+    }
+
+    /// decision 0033: `MAX_QUERY_LEN`を超える検索語はトリム後の先頭
+    /// `MAX_QUERY_LEN`文字に切り詰められ、`q_truncated`が立つ
+    /// (黙って切り詰めない・画面上で観測可能にする、ui-ux-guidelines §1)。
+    #[test]
+    fn q_beyond_max_len_is_truncated_and_flagged() {
+        let q = "あ".repeat(MAX_QUERY_LEN + 1);
+        let p = ListParams::parse(&params(&[("q", &q)]));
+        assert_eq!(p.q.chars().count(), MAX_QUERY_LEN);
+        assert_eq!(p.q, "あ".repeat(MAX_QUERY_LEN));
+        assert!(p.q_truncated);
+    }
+
+    /// decision 0033: トリムしてから長さ判定する。トリム前は超過していても
+    /// トリム後に収まるなら切り詰めない(コードポイント数はトリム後に数える、
+    /// decision 0004/0003と同じ規約)。
+    #[test]
+    fn q_trim_happens_before_length_check() {
+        let padded_with_spaces = format!("  {}  ", "あ".repeat(MAX_QUERY_LEN));
+        let p = ListParams::parse(&params(&[("q", &padded_with_spaces)]));
+        assert_eq!(p.q.chars().count(), MAX_QUERY_LEN);
+        assert!(!p.q_truncated);
     }
 }

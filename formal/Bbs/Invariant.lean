@@ -2014,11 +2014,32 @@ D03 方式①（JOIN 解決）の正しさ。表示名を変えた直後、
     （トリム後"A"は1文字）だが、保存されるのは`"A"`なので
     `authorDisplayName = some " A "`は成り立たない。
 
+    **さらに`Wf db`が要る**（F11セッションのレビューで訂正、2度目の修正）。
+    トリムを直した後の言明も、`Wf`を仮定しないままでは**まだ偽**だった ――
+    `hs`はセッションの存在しか言わず、その`userId`に対応する`User`が
+    `db.users`に実在することを保証しない。`updateDisplayName`の更新は
+    `s.users.map (fun u => if u.id = uid then … else u)`（`Op.lean`）なので、
+    該当ユーザーが居なければ**黙って何も起きない**。一方`toRow`の
+    `authorDisplayName`は`displayNameOf db' t.authorId`
+    ＝`(db'.users.find? (·.id = uid)).map (·.displayName)`であり、`none`になる。
+
+    反例（`decide`で確認済み）: `db.users = []`、`db.sessions = [⟨1, 1⟩]`、
+    `db.threads = [{id := 1, authorId := 1, …}]`、`n = "A"`。仮定`hs`・`hv`は
+    ともに成立するが、更新後の`authorDisplayName`は`none`であり
+    `some "A"`にならない。
+
+    `Wf`の`sessionUsersExist`（∀ s ∈ db.sessions, ∃ u ∈ db.users, u.id = s.userId）が
+    ちょうどこの穴を塞ぐ。`userIdsDistinct`と併せて、`find?`が拾う唯一の該当ユーザーが
+    更新後の`Validation.trim n`を持つことが言えるようになる。この`db`は`Wf`を
+    破っている（`sessionUsersExist`・`threadAuthorsExist`の両方に違反）ので、
+    `Wf`を仮定すれば反例は消える。
+
     `sorry`のまま残す言明が偽だと、後続セッションがこれを補題として使った時点で
     そこから導かれるものがすべて無価値になる（このファイル冒頭の方針、および
     `thread_immutable`が同じ理由でF05時点に仮定を補われた経緯を参照）。証明を
     後回しにすること自体は許すが、**言明は真の形で置く**。F04実装のサイクルで証明する。 -/
 theorem displayName_propagates (db : Db) (sid : SessionId) (uid : UserId) (n : String)
+    (hwf : Wf db)
     (hs : db.sessions.find? (·.id = sid) = some ⟨sid, uid⟩)
     (hv : Validation.displayNameValid n = true) :
     let db' := (updateDisplayName sid n db).2
@@ -2325,23 +2346,58 @@ theorem comment_bumps_lastUpdated_is_applicable :
 
 /-! ### 9. 検索 (F11 / AC11-2, AC11-4) -/
 
-/-- AC11-2: 本文またはコメント本文にキーワードを含むスレッドがヒットする。 -/
+/-- AC11-2: 本文またはコメント本文にキーワードを含むスレッドがヒットする。
+    `hitIn`は本文優先(`if containsSubstr t.body kw then some .inBody else ...`)なので、
+    本文がヒットする`t`は無条件に`.inBody`を返す ―― コメント側の場合分けを見る必要がない。 -/
 theorem search_finds_body (db : Db) (kw : String)
     (t : Thread) (h : t ∈ db.threads) (hc : containsSubstr t.body kw = true) :
-    ∃ r ∈ search db kw, r.thread = t := by sorry
+    ∃ r ∈ search db kw, r.thread = t := by
+  refine ⟨{ thread := t, hit := .inBody }, ?_, rfl⟩
+  unfold search
+  rw [List.mem_filterMap]
+  refine ⟨t, h, ?_⟩
+  unfold hitIn
+  simp [hc]
 
 /-- AC11-4 の充足（decision 0012 で確定した方式）: 削除済みコメントを理由に
     ヒットすることはない ＝ 返る `Hit` が指すコメントは必ず未削除。 -/
 theorem no_deleted_hit (db : Db) (kw : String) (r : SearchResult)
     (h : r ∈ search db kw) (cid : CommentId) (hh : r.hit = .inComment cid) :
-    ∃ c ∈ db.comments, c.id = cid ∧ c.deleted = false := by sorry
+    ∃ c ∈ db.comments, c.id = cid ∧ c.deleted = false := by
+  unfold search at h
+  rw [List.mem_filterMap] at h
+  obtain ⟨t, ht, hf⟩ := h
+  unfold hitIn at hf
+  dsimp only at hf
+  split at hf
+  · -- 本文ヒット(`.inBody`)分岐: `r.hit = .inComment cid`という仮定と矛盾する。
+    simp only [Option.map_some] at hf
+    have hr : r = { thread := t, hit := Hit.inBody } := Option.some.inj hf.symm
+    rw [hr] at hh
+    simp at hh
+  · -- コメントヒット分岐。`searchableComments`(=`!c.deleted`でフィルタ済み)から
+    -- 見つかった要素のidが`cid`。
+    cases hfind :
+        (searchableComments (commentsOf db t.id)).find? (fun c => containsSubstr c.body kw) with
+    | none => rw [hfind] at hf; simp at hf
+    | some c =>
+      rw [hfind] at hf
+      simp only [Option.map_some] at hf
+      have hr : r = { thread := t, hit := Hit.inComment c.id } := Option.some.inj hf.symm
+      rw [hr] at hh
+      simp only [Hit.inComment.injEq] at hh
+      have hcmem : c ∈ searchableComments (commentsOf db t.id) :=
+        List.mem_of_find?_eq_some hfind
+      unfold searchableComments at hcmem
+      rw [List.mem_filter] at hcmem
+      obtain ⟨hcmem', hcnotdel⟩ := hcmem
+      unfold Query.commentsOf at hcmem'
+      rw [List.mem_filter] at hcmem'
+      exact ⟨c, hcmem'.1, hh, by simpa using hcnotdel⟩
 
-/-- AC11-3 のスクロール先が実在すること（D19）。
-    ヒット箇所は必ず詳細画面に描画される要素を指す。 -/
-theorem hit_is_reachable (db : Db) (kw : String)
-    (r : SearchResult) (h : r ∈ search db kw) (cid : CommentId)
-    (hh : r.hit = .inComment cid) :
-    ∃ d, threadDetail db r.thread.id = some d ∧ ∃ cv ∈ d.comments, cv.id = cid := by sorry
+-- `hit_is_reachable`（AC11-3のスクロール先が実在すること、D19）は本セクションの
+-- 末尾ではなく§10末尾に置く。証明が`deleted_comment_keeps_metadata`（§10）に
+-- 依存し、Leanは前方参照を許さないため。
 
 /-! ### 10. 固定文言 (C-01 / AC08-2) -/
 
@@ -2374,6 +2430,62 @@ theorem deleted_comment_keeps_metadata (db : Db) (tid : ThreadId) (d : ThreadDet
   rw [← hd]
   simp only [List.mem_map]
   exact ⟨c, (sortBy_mem _ c (Query.commentsOf db t.id)).mpr hcmt, rfl⟩
+
+/-- AC11-3 のスクロール先が実在すること（D19）。
+    ヒット箇所は必ず詳細画面に描画される要素を指す。`no_deleted_hit`（§9）と
+    同じ場合分けで`Hit.inComment`に対応する未削除コメント`c`を取り出し、
+    `deleted_comment_keeps_metadata`（本セクション）を使って`c`が
+    `threadDetail`の`comments`に現れることを示す。 -/
+theorem hit_is_reachable (db : Db) (kw : String)
+    (r : SearchResult) (h : r ∈ search db kw) (cid : CommentId)
+    (hh : r.hit = .inComment cid) :
+    ∃ d, threadDetail db r.thread.id = some d ∧ ∃ cv ∈ d.comments, cv.id = cid := by
+  unfold search at h
+  rw [List.mem_filterMap] at h
+  obtain ⟨t, ht, hf⟩ := h
+  unfold hitIn at hf
+  dsimp only at hf
+  split at hf
+  · -- 本文ヒット分岐は`.inComment`という仮定と矛盾する(no_deleted_hitと同型)。
+    simp only [Option.map_some] at hf
+    have hr : r = { thread := t, hit := Hit.inBody } := Option.some.inj hf.symm
+    rw [hr] at hh
+    simp at hh
+  · cases hfind :
+        (searchableComments (commentsOf db t.id)).find? (fun c => containsSubstr c.body kw) with
+    | none => rw [hfind] at hf; simp at hf
+    | some c =>
+      rw [hfind] at hf
+      simp only [Option.map_some] at hf
+      have hr : r = { thread := t, hit := Hit.inComment c.id } := Option.some.inj hf.symm
+      have hrthread : r.thread = t := by rw [hr]
+      have hh' : c.id = cid := by rw [hr] at hh; simpa using hh
+      -- `c`は未削除コメント(`searchableComments`)かつ`t`に属する(`commentsOf`)。
+      have hcmem : c ∈ searchableComments (commentsOf db t.id) :=
+        List.mem_of_find?_eq_some hfind
+      unfold searchableComments at hcmem
+      rw [List.mem_filter] at hcmem
+      obtain ⟨hcmem', -⟩ := hcmem
+      unfold Query.commentsOf at hcmem'
+      rw [List.mem_filter] at hcmem'
+      obtain ⟨hcin, hcthread⟩ := hcmem'
+      have hcthread' : c.threadId = t.id := by simpa using hcthread
+      -- `t ∈ db.threads`なので、詳細画面(`threadDetail`)は必ず`some`になる
+      -- (存在しないスレッドの検索結果は`search`が返さないので404には落ちない、
+      -- decision 0012の裏付け)。
+      rw [hrthread]
+      cases hd : threadDetail db t.id with
+      | none =>
+        exfalso
+        unfold threadDetail at hd
+        cases hfc : db.threads.find? (fun t' => t'.id = t.id) with
+        | none => exact (List.find?_eq_none.mp hfc) t ht (by simp)
+        | some t' => rw [hfc] at hd; simp at hd
+      | some d =>
+        refine ⟨d, rfl, ?_⟩
+        obtain ⟨cv, hcvmem, hcvid, -, -⟩ :=
+          deleted_comment_keeps_metadata db t.id d hd c hcin hcthread'
+        exact ⟨cv, hcvmem, by rw [hcvid, hh']⟩
 
 end Invariant
 end Bbs

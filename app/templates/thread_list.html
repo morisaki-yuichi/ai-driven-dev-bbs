@@ -9,10 +9,17 @@
    `web/thread_detail.rs::delete_thread`が`/?thread_deleted=1`へリダイレクトする
    ―― 削除後はスレッド自体が404になり元の詳細画面には戻れないため、一覧側に
    通知を出す。空でも要素自体は常に置く(thread_detail.htmlの共通メッセージエリアと
-   同じ理由、aria-liveが変化を検知するため)。 #}
+   同じ理由、aria-liveが変化を検知するため)。
+   decision 0033: `q`が200文字を超えた場合、黙って切り詰めずここに通知を出す
+   (ui-ux-guidelines §1、H-12の観測性)。切り詰め後の値は検索窓・検索結果見出し・
+   ページ送りリンクのいずれにも既に反映されている(`web/params.rs::ListParams::parse`
+   が切り詰め済みの`q`を返す)。 #}
 <div class="message-area" aria-live="polite">
     {% if let Some(msg) = thread_deleted_message %}
     <p class="message message-success">{{ msg }}</p>
+    {% endif %}
+    {% if q_truncated %}
+    <p class="message message-warning">検索キーワードが200文字を超えたため、先頭200文字で検索しました。</p>
     {% endif %}
 </div>
 
@@ -20,26 +27,59 @@
    唯一の導線であり、hoverでのみ現れる等の隠し要素にしない(ui-ux-guidelines §6)。 #}
 <p><a href="/threads/new">新規スレッド作成</a></p>
 
-{# 検索窓・ソート切替(F11・F12)は範囲外(ユーザー承認済みのスコープ)。
-   ここではF09(初期表示・コメント数・最終更新日時・ページネーション・空状態表示)
-   のみを扱う。件数を固定的に仮定しない(ui-ux-guidelines §7。H-08〜H-11によりDBには
+{# F11(検索、issues/11_search_function.md)。AC11-2の検索窓。GET送信なので
+   novalidateは不要(サーバ側の検証を要する入力欄が無い、空クエリは全件表示で
+   エラーにならない、decision 0011)。`method="get" action="/"`により
+   ブラウザが`q`をURLクエリへ自動エンコードするため、ここではエンコード不要
+   (C-13のページ送りリンクとは別経路、web/params.rs::encode_query_componentの
+   docコメント参照)。ページはあえて保持しない ―― 新しい検索は常に1ページ目から
+   始める。`sort`はhidden inputで保持する ―― F12でソートUIが入った時点で
+   「検索すると選択中のソートが既定に戻る」というC-13違反の経路が生まれるのを
+   先回りして塞ぐ(現状はF12未実装のため常に既定値`created_desc`が往復するだけで
+   挙動は変わらない)。 #}
+<form method="get" action="/" class="search-form" role="search">
+    <div class="field">
+        <label for="search_q">キーワード検索</label>
+        <input type="text" id="search_q" name="q" value="{{ q }}">
+    </div>
+    <input type="hidden" name="sort" value="{{ sort_value }}">
+    <button type="submit">検索</button>
+</form>
+
+{% if is_searching %}
+{# AC11-2: 検索結果一覧であることを明示する(状態の網羅、ui-ux-guidelines §1)。
+   「キーワードを含むスレッドが一覧表示される」ことを`agent-browser`が
+   自然言語で確認できるようにする。 #}
+<p class="search-status">「{{ q }}」の検索結果</p>
+<p><a href="/">検索をクリア</a></p>
+{% endif %}
+
+{# ソート切替(F12)は範囲外(ユーザー承認済みのスコープ)。ここではF09(初期表示・
+   コメント数・最終更新日時・ページネーション・空状態表示)とF11(検索)を扱う。
+   件数を固定的に仮定しない(ui-ux-guidelines §7。H-08〜H-11によりDBには
    先行するシナリオの投稿が残った状態で評価される)。 #}
 {% if threads.is_empty() %}
 {# decision 0013 §2 / ui-ux-guidelines §1: 0件のときに空白画面にせず、
    該当0件であることが分かる表示にする。
-   「スレッドが1件も無い」と「スレッドはあるが指定ページが範囲外」は別の状況なので、
-   文言を分ける。同じ文言だと後者で「スレッドが0件」と誤読される。 #}
-{% if has_any_threads %}
+   「スレッドが1件も無い」「検索に一致するスレッドが無い」「一致するスレッドは
+   あるが指定ページが範囲外」は別の状況なので、文言を分ける。同じ文言だと
+   後2者で意味を誤読される。 #}
+{% if has_matching_threads %}
 <p class="empty-state">このページには表示するものがありません。</p>
+{% else if is_searching %}
+<p class="empty-state">「{{ q }}」に一致するスレッドがありません。</p>
 {% else %}
 <p class="empty-state">表示できるスレッドがありません。</p>
 {% endif %}
 {% else %}
 {% for thread in threads %}
 <article class="thread-card">
-    {# F10(スレッド詳細)への導線。href形式は必ず"/threads/<数字>"にする
-       (F09で緩和したC-05テストがこの形式を検証している)。 #}
-    <h2><a href="/threads/{{ thread.id }}">{{ thread.title }}</a></h2>
+    {# F10(スレッド詳細)への導線。href形式は必ず"/threads/<数字>"から始まる
+       (F09で緩和したC-05テストがこの形式を検証している)。AC11-3/D19:
+       検索でコメントにヒットした場合は`#comment-{id}`フラグメントを付け、
+       遷移直後にブラウザ標準のスクロールでヒット箇所を表示させる
+       (decision 0008のJSなし範囲に収まる)。 #}
+    <h2><a href="/threads/{{ thread.id }}{% if let Some(frag) = thread.hit_fragment %}{{ frag }}{% endif %}">{{ thread.title }}</a></h2>
     <p>{{ thread.body }}</p>
     <p>{{ thread.author_display_name }} さん・{{ thread.created_at }}</p>
     {# AC09-2/AC09-4: コメント数(削除済み込み・D13)と最終更新日時(C-15)。 #}
@@ -52,14 +92,18 @@
    `agent-browser`が「ボタンが存在する」と誤観測しないようにするため。
    前後どちらのリンクも出ない場合は`<nav>`ごと出さない ―― 中身が空のまま
    `aria-label="ページ送り"`だけが残ると、支援技術・`agent-browser`のいずれにも
-   「ページ送りがある」と観測されうる。 #}
+   「ページ送りがある」と観測されうる。
+   C-13: `q`・`sort`を保持したまま`page`だけを変える(decision 0011 §影響)。
+   `q_encoded`はURLクエリ値として安全な形にパーセントエンコード済み
+   (web/params.rs::encode_query_component)。`sort_value`はF12実装後もソートUIの
+   選択値をここに渡すだけで壊れない形にしてある(現状は常に既定値)。 #}
 {% if has_prev || has_next %}
 <nav class="pagination" aria-label="ページ送り">
     {% if has_prev %}
-    <a href="/?page={{ prev_page }}">前に戻る</a>
+    <a href="/?q={{ q_encoded }}&sort={{ sort_value }}&page={{ prev_page }}">前に戻る</a>
     {% endif %}
     {% if has_next %}
-    <a href="/?page={{ next_page }}">次に進む</a>
+    <a href="/?q={{ q_encoded }}&sort={{ sort_value }}&page={{ next_page }}">次に進む</a>
     {% endif %}
 </nav>
 {% endif %}
