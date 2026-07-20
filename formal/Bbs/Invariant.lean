@@ -12,10 +12,17 @@
   （ログアウトは対象セッションだけを消し、同一利用者の別セッションには影響しない。
   decision 0007 の多重セッション許可と整合する）―― が証明済み。
 
-  未実装機能（スレッド・コメント・検索・一覧のページングとソート）に対応する定理は
-  まだ `sorry` のままで、`lake build` はそのぶんの警告（declaration uses 'sorry'）を
-  出すが成功する。証明を試みる過程でさらに未規定点が出ることを想定しており、
-  残りは各機能の実装時に順次埋める。
+  F05（スレッド作成）で新たに証明したのは `createThread_atomic`（decision 0002）と
+  `createThread_does_not_modify_existing_threads`（C-05/AC05-4。`thread_immutable`の
+  一般形の代わりに`createThread`単体へ絞った版 ―― decision 0025 参照）の2件。
+  `createThread_requires_auth`（C-09）もF05に対応する定理だが、こちらは
+  `requireAuth_fails_without_session` を土台にF02の時点で既に証明済みであり、
+  このセッションの成果ではない。
+
+  未実装機能（スレッド削除・コメント・検索・一覧のページングとソート）に対応する
+  定理はまだ `sorry` のままで、`lake build` はそのぶんの警告
+  （declaration uses 'sorry'）を出すが成功する。証明を試みる過程でさらに
+  未規定点が出ることを想定しており、残りは各機能の実装時に順次埋める。
 -/
 import Bbs.Op
 import Bbs.Query
@@ -230,8 +237,28 @@ theorem logout_atomic (sid : SessionId) : NoWriteOnError (logout sid) := by
   intro _
   exact modify_noWriteOnError _
 
+/-- F05 スレッド作成の原子性(decision 0002)。`createThread`は`requireAuth`→
+    タイトル空検査→本文空検査、の順に検査を重ねるだけで、実際に`Db`を書き換える
+    `set`（スレッド追加）は全検査を通過した後の`tick`(clockを1進める)と合わせて
+    最後に一度だけ実行される。`register_atomic`と同じ構造(検査だけが失敗しうる
+    分岐で、検査を全て通過した後の末尾は失敗し得ない)。 -/
 theorem createThread_atomic (sid : SessionId) (t b : String) :
-    NoWriteOnError (createThread sid t b) := by sorry
+    NoWriteOnError (createThread sid t b) := by
+  unfold createThread
+  apply bind_noWriteOnError (requireAuth_noWriteOnSuccess sid)
+  intro _
+  apply bind_noWriteOnError (ensure_noWriteOnSuccess _ _)
+  intro _
+  apply bind_noWriteOnError (ensure_noWriteOnSuccess _ _)
+  intro _
+  -- 残るは`tick`(clockを進める)・`get`・`set`・`pure`の末尾で、これは絶対に失敗しない
+  -- (NoWriteOnErrorは空虚に真)。register_atomicの末尾と同じ理由付けだが、
+  -- `tick`自体がAction.modify;Action.getという2段のdo記法なのでその分もsimpで展開する。
+  intro s0 e s' h
+  simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.set, Action.pure,
+    Action.modify, Action.get, tick] at h
+  injection h with h1 _
+  injection h1
 
 theorem createComment_atomic (sid : SessionId) (tid : ThreadId) (b : String) :
     NoWriteOnError (createComment sid tid b) := by sorry
@@ -380,10 +407,116 @@ def runAll : List Step → Db → Db
   | [], db => db
   | st :: rest, db => runAll rest (runStep st db).2
 
-/-- C-05: スレッド本体は不変。残っているなら中身は同一。 -/
+/-- C-05: スレッド本体は不変。残っているなら中身は同一。
+
+    **`hnodup`/`hfresh`は必須の仮定**であり、外すと言明そのものが**偽**になる
+    (decision 0025)。反例: `threads := [⟨0,_,"a",_,_⟩, ⟨0,_,"z",_,_⟩]`のように
+    idが重複した整形式でない`db`では、`steps = []`だけで
+    「`t' ∈ db.threads`かつ`t'.id = t.id`なら`t' = t`」が成り立たない。
+    当初この2仮定を欠いた形で書かれていたが、それは「後で証明する」ことが
+    原理的に不可能な偽の命題だったため、`createThread_does_not_modify_existing_threads`
+    (下記、F05スコープの単一操作版)が採ったのと同じ局所仮定を付けて**真の命題**へ直した。
+    `Wf`構造体を丸ごと要求しないのも同じ理由 ―― `Wf`全体の保存はF01〜F03の時点でも
+    未証明であり、この言明が実際に要るのは`threadIdsDistinct`/`nextIdsFresh`相当の
+    2性質だけである。
+
+    **未証明(`sorry`)のまま残すが、これは「偽の命題を証明しようとしている」のではなく
+    「真だが未証明」である。** 証明には`Step`(F01〜F08全種)の各操作が
+    `threads`/`nextThreadId`についてこの2性質を保つことを示す必要があり、
+    F06〜F08(`deleteThread`/`createComment`/`deleteComment`)はRust側が未実装。
+    F05単体のセッションでそこまで踏み込むのは過剰スコープと判断し、この機能に
+    対応する単一操作版(`createThread_does_not_modify_existing_threads`)に絞った
+    (decision 0025)。F06〜F08の実装時に、`runAll`についてこの2性質が保存されることを
+    示して本体を埋める。 -/
 theorem thread_immutable (db : Db) (steps : List Step) (t : Thread)
+    (hnodup : (db.threads.map (·.id)).Nodup)
+    (hfresh : ∀ t ∈ db.threads, t.id < db.nextThreadId)
     (h : t ∈ db.threads) :
     ∀ t' ∈ (runAll steps db).threads, t'.id = t.id → t' = t := by sorry
+
+/-! #### F05スコープの補題: `createThread`は既存スレッドを変更しない (C-05 / AC05-4)
+
+上の`thread_immutable`は`Step`（F01〜F08全種）を跨ぐ一般形で、F06〜F08の`Op`が未実装の
+このセッションでは過剰スコープ（上のコメント参照）。ここでは**`createThread`という
+単一操作**に絞り、C-05が要求する「作成後に他のスレッドの内容を書き換えない」を
+直接証明する。 -/
+
+/-- `thread_immutable`と同様に、**`db`自体が既にID重複を持たない**（`Wf.threadIdsDistinct`
+    相当）という前提が要る。反例: `threads := [⟨0,_,"a",_,_⟩, ⟨0,_,"z",_,_⟩]`
+    のような不正な`db`では、2件とも`t.id = 0`だが内容が違うので
+    「`t' ∈ db.threads`かつ`t'.id = t.id`なら`t' = t`」自体が最初から成り立たない。
+    `Wf`構造体を丸ごと要求せず、この証明に要る2性質だけを局所的な仮定として取る
+    （`Wf`全体の保存はF01〜F03の時点でも証明されておらず、本セッションの対象外）。 -/
+theorem nodup_map_eq_of_mem {α β : Type} [DecidableEq β] {f : α → β} {l : List α}
+    (h : (l.map f).Nodup) {a b : α} (ha : a ∈ l) (hb : b ∈ l) (hab : f a = f b) : a = b := by
+  induction l with
+  | nil => cases ha
+  | cons x xs ih =>
+    rw [List.map_cons, List.nodup_cons] at h
+    obtain ⟨hx, hxs⟩ := h
+    rcases List.mem_cons.mp ha with ha' | ha'
+    · rcases List.mem_cons.mp hb with hb' | hb'
+      · rw [ha', hb']
+      · exfalso; apply hx; rw [ha'] at hab; rw [hab]; exact List.mem_map_of_mem hb'
+    · rcases List.mem_cons.mp hb with hb' | hb'
+      · exfalso; apply hx; rw [hb'] at hab; rw [← hab]; exact List.mem_map_of_mem ha'
+      · exact ih hxs ha' hb'
+
+/-- `Action.ensure`の2値を具体形に落とす。`if b then .. else ..`(`b : Bool`)は
+    `ite (b = true) .. ..`へ脱糖されるため、`htitle : nonEmptyText title = true`を
+    `simp`で代入しても`if True then .. else ..`止まりで完全には簡約されない
+    (`decide`系の後始末が要る)。あらかじめ`Bool`literal版の等式として用意しておき、
+    本体の証明では`nonEmptyText title`を`true`/`false`へ書き換えた直後にこれを
+    適用する2段構えにする。 -/
+theorem ensure_true_eq (e : Error) : Action.ensure true e = Action.pure () := by
+  unfold Action.ensure; simp
+
+theorem ensure_false_eq (e : Error) : Action.ensure false e = Action.fail e := by
+  unfold Action.ensure; simp
+
+/-- F05 / C-05 / AC05-4: `createThread`は、既に`db`に存在するどのスレッドの内容も
+    書き換えない。追加(`append`)だけを行う操作なので、生き残ったIDは元の中身のまま。
+    `hnodup`/`hfresh`は`thread_immutable`と同じ理由で必要な局所仮定（コメント参照）。 -/
+theorem createThread_does_not_modify_existing_threads
+    (sid : SessionId) (title body : String) (db : Db)
+    (hnodup : (db.threads.map (·.id)).Nodup)
+    (hfresh : ∀ t ∈ db.threads, t.id < db.nextThreadId)
+    (t : Thread) (h : t ∈ db.threads) :
+    ∀ t' ∈ ((createThread sid title body) db).2.threads, t'.id = t.id → t' = t := by
+  intro t' ht' hid
+  unfold createThread at ht'
+  -- `requireAuth sid db`で場合分けする。未認証なら状態は書き変わらず`db`のまま。
+  cases hsess : db.sessions.find? (·.id = sid) with
+  | none =>
+    simp only [bind, Bind.bind, Action.bind, Action.get, Action.fail, requireAuth, hsess] at ht'
+    exact nodup_map_eq_of_mem hnodup ht' h hid
+  | some sess =>
+    -- タイトル・本文の空検査で場合分け。どちらかが空なら状態は書き変わらず`db`のまま。
+    cases htitle : Validation.nonEmptyText title with
+    | false =>
+      simp only [bind, Bind.bind, Pure.pure, Action.bind, Action.get, Action.pure,
+        Action.fail, requireAuth, hsess, htitle, ensure_false_eq] at ht'
+      exact nodup_map_eq_of_mem hnodup ht' h hid
+    | true =>
+      cases hbody : Validation.nonEmptyText body with
+      | false =>
+        simp only [bind, Bind.bind, Pure.pure, Action.bind, Action.get, Action.pure,
+          Action.fail, requireAuth, hsess, htitle, hbody, ensure_true_eq, ensure_false_eq] at ht'
+        exact nodup_map_eq_of_mem hnodup ht' h hid
+      | true =>
+        -- ここまで来れば必ず成功し、`db.threads ++ [newThread]`が書き込まれる。
+        -- `t'`は元のリストにあったか、新規追加分かのいずれか。
+        simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+          Action.pure, Action.modify, tick, requireAuth, hsess,
+          htitle, hbody, ensure_true_eq] at ht'
+        rw [List.mem_append, List.mem_singleton] at ht'
+        rcases ht' with ht' | ht'
+        · exact nodup_map_eq_of_mem hnodup ht' h hid
+        · -- 新規スレッドは`id := db.nextThreadId`。`hfresh`よりこれは`t.id`と一致しない。
+          exfalso
+          have hlt : t.id < db.nextThreadId := hfresh t h
+          have heq : db.nextThreadId = t.id := by rw [ht'] at hid; exact hid
+          exact Nat.lt_irrefl t.id (heq ▸ hlt)
 
 /-- C-05: コメント本文と作成者・作成日時は不変（`deleted` のみ変化しうる）。 -/
 theorem comment_body_immutable (db : Db) (steps : List Step) (c : Comment)
