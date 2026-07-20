@@ -32,18 +32,44 @@
    エラーにならない、decision 0011)。`method="get" action="/"`により
    ブラウザが`q`をURLクエリへ自動エンコードするため、ここではエンコード不要
    (C-13のページ送りリンクとは別経路、web/params.rs::encode_query_componentの
-   docコメント参照)。ページはあえて保持しない ―― 新しい検索は常に1ページ目から
-   始める。`sort`はhidden inputで保持する ―― F12でソートUIが入った時点で
-   「検索すると選択中のソートが既定に戻る」というC-13違反の経路が生まれるのを
-   先回りして塞ぐ(現状はF12未実装のため常に既定値`created_desc`が往復するだけで
-   挙動は変わらない)。 #}
+   docコメント参照)。ページはあえて保持しない ―― 新しい検索・ソート変更は
+   常に1ページ目から始める。
+
+   F12(ソート、issues/12_sort_function.md)のソート切替は検索フォームと同じ
+   `<form>`内に`<select name="sort">`として置く。独立した`<form>`にすると、
+   ソートを変更したときにブラウザは「送信されたそのformの入力欄」しか
+   URLに含めないため検索語`q`が失われ、C-13(検索条件とソート順の両方の維持)
+   に違反する ―― F11実装時点で先回りして`sort`をhidden inputとして
+   同じformに置いていたのはこのため。ここではそのhidden inputを実際に選べる
+   `<select>`に置き換える。プロジェクトはJSを使わない方針(decision 0008の
+   SSR/MPA、`<script>`を持つテンプレートが無い)なので`onchange`での自動送信は
+   せず、既存の送信ボタンをそのまま共用する ―― このボタンは元々「今のform
+   状態(q・sort)を反映して`/`へGETする」ボタンであり、検索語を変えずに
+   ソートだけ変えて押しても正しく動く。
+
+   **ボタンのラベルは[検索・並び替え]**(decision 0034)。JSなしで`<select>`の
+   変更がボタン押下でしか反映されない以上、ラベルが[検索]のままだと
+   「ソートを変えるにはこのボタンを押す」ことが画面上のどこにも書かれていない
+   状態になる ―― `agent-browser`(H-12)が「コメント数順に並び替える」と指示
+   されたとき、optionを選んだだけで一覧が変わらず、検索語を変えていないのに
+   [検索]を押すという発想に至らずに手詰まりになりうる(H-02の操作性)。
+   ラベルに並び替えを含めることで、押下が必要であることを観測可能にする。 #}
 <form method="get" action="/" class="search-form" role="search">
     <div class="field">
         <label for="search_q">キーワード検索</label>
         <input type="text" id="search_q" name="q" value="{{ q }}">
     </div>
-    <input type="hidden" name="sort" value="{{ sort_value }}">
-    <button type="submit">検索</button>
+    {# decision 0034: 4値の表示ラベル文言。 #}
+    <div class="field">
+        <label for="sort_select">並び順</label>
+        <select id="sort_select" name="sort">
+            <option value="created_desc"{% if sort_value == "created_desc" %} selected{% endif %}>作成日時（新しい順）</option>
+            <option value="created_asc"{% if sort_value == "created_asc" %} selected{% endif %}>作成日時（古い順）</option>
+            <option value="comment_count_desc"{% if sort_value == "comment_count_desc" %} selected{% endif %}>コメント数（多い順）</option>
+            <option value="last_updated_desc"{% if sort_value == "last_updated_desc" %} selected{% endif %}>最終更新日時（新しい順）</option>
+        </select>
+    </div>
+    <button type="submit">検索・並び替え</button>
 </form>
 
 {% if is_searching %}
@@ -54,8 +80,8 @@
 <p><a href="/">検索をクリア</a></p>
 {% endif %}
 
-{# ソート切替(F12)は範囲外(ユーザー承認済みのスコープ)。ここではF09(初期表示・
-   コメント数・最終更新日時・ページネーション・空状態表示)とF11(検索)を扱う。
+{# F09(初期表示・コメント数・最終更新日時・ページネーション・空状態表示)・
+   F11(検索)・F12(ソート、上記フォームの`<select name="sort">`)を扱う。
    件数を固定的に仮定しない(ui-ux-guidelines §7。H-08〜H-11によりDBには
    先行するシナリオの投稿が残った状態で評価される)。 #}
 {% if threads.is_empty() %}
@@ -95,8 +121,8 @@
    「ページ送りがある」と観測されうる。
    C-13: `q`・`sort`を保持したまま`page`だけを変える(decision 0011 §影響)。
    `q_encoded`はURLクエリ値として安全な形にパーセントエンコード済み
-   (web/params.rs::encode_query_component)。`sort_value`はF12実装後もソートUIの
-   選択値をここに渡すだけで壊れない形にしてある(現状は常に既定値)。 #}
+   (web/params.rs::encode_query_component)。`sort_value`は選択中のソートの
+   `SortKey::as_query_value()`(固定ASCII文字列)。 #}
 {% if has_prev || has_next %}
 <nav class="pagination" aria-label="ページ送り">
     {% if has_prev %}

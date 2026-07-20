@@ -21,8 +21,21 @@
 //! (LIMIT/OFFSET)はここに持ち込まない——全件取得して`domain::query::paginate`
 //! (純粋関数)に渡す方針（ユーザー承認済みのスコープ）。F09(初期表示)は`search`に
 //! 空クエリを渡す特殊ケースとして統一的に扱う（decision 0011、下記`search`の
-//! docコメント参照）。ソートはF12の範囲でありSQL側は`order by created_at desc, id
-//! desc`(decision 0009)に固定。
+//! docコメント参照）。
+//!
+//! **表示順を決めるのはこのSQLではない**(F12実装後の実態)。4つのソート値
+//! (decision 0034)の適用は`web/thread_list.rs`が`domain::query::sort_thread_fields`
+//! (純粋関数、`formal/Bbs/Query.lean`の`sortThreads`の対応先)で行う。ここの
+//! `order by`は、その再整列に入る前の**決定的な初期順序**を与えるためだけにある
+//! ―― 行の集合さえ同じなら整列後の結果は初期順序に依らないが、順序の付かない
+//! `select`を後段に渡すのは避ける。
+//!
+//! `order by threads.created_at desc, threads.id asc`のタイブレークが**id昇順**
+//! なのは、`domain::query::sort_thread_fields`とLeanの`leOf`が全キーで
+//! 「主キー → id**昇順**」の辞書式を採るため(F12レビューで`id desc`から訂正)。
+//! decision 0029の通り1トランザクション内では`now()`が同値になりうるので、
+//! `created_at`が同値の2件でSQL側とRust側のタイブレークが逆を向く状況は
+//! 実際に到達可能だった。
 
 use sqlx::PgExecutor;
 
@@ -148,7 +161,7 @@ where
                   and c2.body like $1 escape '\'
            )
         group by threads.id, users.display_name, hit.comment_id
-        order by threads.created_at desc, threads.id desc
+        order by threads.created_at desc, threads.id asc
         "#,
         pattern,
         is_search,

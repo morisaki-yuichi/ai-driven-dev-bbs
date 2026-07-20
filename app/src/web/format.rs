@@ -28,6 +28,27 @@ pub fn format_created_at(at: OffsetDateTime) -> String {
     )
 }
 
+/// `OffsetDateTime` を`domain::query::ThreadSortFields`が要求する`i64`ミリ秒
+/// エポック値へ変換する(F12)。domain層は`chrono`/`time`crateに依存しない方針
+/// (`domain/query.rs`冒頭のdocコメント)なので、DB由来の`OffsetDateTime`を
+/// 純粋関数`sort_thread_fields`に渡す前にここで変換する(`format_created_at`と
+/// 同じ理由でweb層に置く)。
+///
+/// `unix_timestamp_nanos()`(`i128`)をナノ秒からミリ秒へ切り捨てる。
+///
+/// **精度低下は実際に起きる**。DBの列はマイクロ秒精度(PostgreSQLの`timestamptz`)
+/// なので、この変換はマイクロ秒以下の3桁を捨てている。許容できる理由は
+/// 「失われない」からではなく、**失われる精度がdecision 0009の要求粒度
+/// (ミリ秒以上)を下回るから**。
+///
+/// 帰結として、`created_at`／`last_updated_at`が**1ミリ秒未満しか違わない**2件は
+/// この変換で同値に潰れ、`sort_thread_fields`のタイブレーク(id昇順)に落ちる。
+/// decision 0029の通り1トランザクション内の`now()`は同値になりうるため、これは
+/// 到達可能な経路だが、id昇順への退避は決定的なので表示順が不定になることはない。
+pub fn to_millis(at: OffsetDateTime) -> i64 {
+    (at.unix_timestamp_nanos() / 1_000_000) as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +91,25 @@ mod tests {
             format_created_at(utc(2026, 2, 15, 4, 59)),
             "2026-01-03 00:04"
         );
+    }
+
+    /// F12: UNIXエポックはちょうど0ミリ秒。
+    #[test]
+    fn to_millis_of_unix_epoch_is_zero() {
+        assert_eq!(to_millis(OffsetDateTime::UNIX_EPOCH), 0);
+    }
+
+    /// F12: `sort_thread_fields`のタイブレークは秒未満の差も区別できる必要がある
+    /// (decision 0009: タイムスタンプはミリ秒以上の精度)ので、ミリ秒未満切り捨てにより
+    /// 順序関係(前後)が保たれることを確認する。
+    #[test]
+    fn to_millis_preserves_ordering_within_the_same_second() {
+        let earlier = utc(2026, 200, 5, 30, 0);
+        let later = Date::from_ordinal_date(2026, 200)
+            .unwrap()
+            .with_hms_milli(5, 30, 0, 500)
+            .unwrap()
+            .assume_utc();
+        assert!(to_millis(earlier) < to_millis(later));
     }
 }
