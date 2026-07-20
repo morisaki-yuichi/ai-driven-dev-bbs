@@ -1,0 +1,21 @@
+# セッションログ: 2026-07-21 #26 表示名欄maxlength観測性ミニサイクル（fix/display-name-maxlength-observability）
+
+- フェーズ: 4（実装基盤構築フェーズ後・全12機能実装完了後の最終観測性調整）
+- 今回やったこと:
+  - オーケストレーション（S2 実装 → S3 レビュー → G3 裁定 → 裁定反映）で進行した。全12機能の実装完了・持ち越し事項の解消・評価者経路の通し確認（シナリオ01〜05全合格）の後に行う、最後の観測性調整サイクルである。着手対象が明確だったため S1 は省略し、G1 相当の承認は通し確認の報告を受けたユーザー裁定で得た。
+  - 発端: 評価者経路の最終ゲート（クリーンcloneからの `docker compose up` ＋ シナリオ01〜05の通し確認）で、表示名入力欄の `maxlength="15"` により `agent-browser` が16文字目を入力できず、シナリオ05-1-5「表示名を16文字にするとエラーになることを確認」および AC01-4（表示名15文字超で登録不可）を字義どおり観測できない（「エラー表示」ではなく「入力抑止」として現れる）ことが判明した。サーバ側の二重バリデーション（15文字、コードポイント単位＝decision 0003）は健在だった。個別機能サイクルの `/verify`（curl/Playwright）では見えず、通し確認で `agent-browser` 観点を意識して初めて浮上した問題。`ui-ux-guidelines.md` §6 が警告する「Playwrightでの目視だけでは検証できない `agent-browser` 固有の操作性」が顕在化した形。
+  - S2（実装）: `register.html`・`profile_edit.html` の表示名欄から `maxlength="15"` を外した（`unique_id`・`password` の属性は未変更）。`register.html` の maxlength に付けていたWhy-notコメント（UTF-16コードユニット単位 vs コードポイント単位の乖離をBMP限定運用として許容する趣旨）を、maxlength除去に伴い「なぜmaxlengthを付けないか」のWhyコメントに書き換えた。decision 0037を記録した。Playwrightで実際に16コードポイント（あいうえお…）を入力できること、送信するとサーバ側エラー「表示名は15文字以内で入力してください」がDOMテキストとして表示されること、DBが更新/作成されないことを登録・編集の両フォームで確認した。
+  - S3（レビュー）: 重大・HIGH/MEDIUMは0件。maxlength除去で広がった攻撃面（クライアント側の文字数制限が消え、サーバ側検証が唯一の砦になる）を実測で確認した。3000文字・16個のastral絵文字（サロゲートペア）はいずれもサーバ側で拒否されusers 0件、15絵文字は受理・永続化。XSSは再描画経路も含めAskamaの自動エスケープで維持（`">`<script>...` を投稿しエスケープを確認）。maxlengthを失ったのは表示名フィールドのみでunique_idのrequired・passwordのminlength=12は保持。decision 0037が0023のcarve-outとして正しく位置づけられていることも確認した。
+  - S3が指摘した軽微3件: (1) `register.html` の様式コメントがmaxlengthを「残す属性」として挙げたままで実態と矛盾、(2) 回帰テストが16文字BMPのみでサロゲートペア・極端長のコミット済みテストが無い、(3) 0023本文に0037への相互参照が無い。
+  - G3裁定の反映: 様式コメントを実態（表示名欄にはmaxlengthを付けない、unique_id/passwordにはrequired/minlengthが残る）に合わせて修正した。回帰テストを4件追加した（`register_test.rs`・`profile_edit_test.rs` の両方に、サロゲートペア絵文字16コードポイントと3000文字のケース。サロゲートペアのケースはコードポイント単位判定＝decision 0003が効いていることを、UTF-16コードユニット単位なら32になる旨のコメントで明示）。decision 0023に0037への相互参照を追記した（0023の決定内容は変えず、変更履歴に追記）。
+  - 作業ツリーの差分で確認したファイル: `app/templates/register.html`、`app/templates/profile_edit.html`、`app/tests/register_test.rs`、`app/tests/profile_edit_test.rs`、`dev-docs/decisions/0023-no-native-client-validation.md`、`dev-docs/decisions/README.md`、`dev-docs/decisions/0037-display-name-no-maxlength.md`（新規）。ブランチ `fix/display-name-maxlength-observability`、分岐元は main の `c7fbf5b`。
+- 決めたこと（関連 decision 番号があれば併記）:
+  - 表示名の入力欄（`register.html`・`profile_edit.html`）から `maxlength="15"` を外す。ユニークID・パスワード欄には手を触れない。クライアント側での文字数の即時抑止は無くなり、サーバ側検証（`domain/validation.rs`、コードポイント単位、decision 0003）が唯一の砦になる（decision 0037）。
+  - decision 0023（novalidate採用）の「maxlengthはセマンティクスとして残す」という記述は、表示名欄について0037で上書きされる。0023自体の決定内容（novalidateの採否）は変更しない。0023の変更履歴に0037への相互参照を追記した（decision 0023）。
+- 次にやること:
+  - **このミニサイクルの完了をもって、全12機能の実装・持ち越し事項の解消・評価者経路の通し確認・観測性の最終調整がすべて完了する。** 次はコミットとPR作成（この後の別ステップで実施、本セッションでは未実施）。
+  - PR後、必要であれば再度クリーンcloneからの `docker compose up` ＋ シナリオ01〜05通し確認で最終確認する。
+- 未解決事項:
+  - SETUP.mdの「起動成功の確認方法（ログにlisten出力が出る）」がappコンテナの実挙動（ログを出さない）と食い違うという軽微な指摘が通し確認で挙がっている。本ミニサイクルの範囲外で未対応（もう一方の確認手段＝`/` への303リダイレクトは機能する）。
+  - Wf保存補題の残件（`updateDisplayName`・`deleteComment` の保存補題とrunAllへの一般形）は未着手のまま持ち越し。
+  - Leanの証明はRustを機械的に拘束しないため、モデルと実装の対応は人手のレビューで維持されている（構造的な制約であり、今回のサイクルでは変化なし）。

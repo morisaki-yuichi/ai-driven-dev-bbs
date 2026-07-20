@@ -28,10 +28,11 @@
 
     <div class="field">
         <label for="display_name">表示名</label>
-        {# maxlength: register.htmlの表示名欄と同じ理由(Why-not含め同ファイル参照)で
-           UTF-16コードユニット単位のクライアント側ヒントとして付ける。厳しい側にしか
-           丸めないので、コードポイント単位のサーバ側判定(唯一の正典)を緩めない。 #}
-        <input type="text" id="display_name" name="display_name" value="{{ display_name }}" required maxlength="15"{% if display_name_error.is_some() %} aria-invalid="true" aria-describedby="display_name_error"{% endif %}>
+        {# Why: register.htmlの表示名欄と同じ理由(decision 0037)で maxlength を
+           付けない。agent-browser が16文字目を入力してサーバ側エラー(AC01-4相当・
+           シナリオ05-1-5)を観測できるようにするため。判定はサーバ側
+           (domain/validation.rs、コードポイント単位、decision 0003)に一本化する。 #}
+        <input type="text" id="display_name" name="display_name" value="{{ display_name }}" required{% if display_name_error.is_some() %} aria-invalid="true" aria-describedby="display_name_error"{% endif %}>
         {% if let Some(msg) = display_name_error %}
         <p class="field-error" id="display_name_error">{{ msg }}</p>
         {% endif %}

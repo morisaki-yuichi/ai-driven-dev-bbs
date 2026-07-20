@@ -252,6 +252,85 @@ async fn post_register_display_name_too_long_is_rejected(pool: PgPool) {
         .unwrap();
     let html = String::from_utf8(body.to_vec()).unwrap();
     assert!(html.contains("表示名は15文字以内で入力してください"));
+
+    // maxlength除去(decision 0037)後もサーバ側検証が唯一の砦としてDB書き込みを防ぐ。
+    let count: (i64,) = sqlx::query_as("select count(*) from users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0);
+}
+
+/// 回帰(decision 0037レビュー指摘): maxlength除去によりブラウザ側の入力抑止が
+/// 無くなったため、agent-browserはサロゲートペア(astral、絵文字)を含む表示名も
+/// 最後まで入力し送信できる。ここでは絵文字16個(=16コードポイント)を使う。
+/// domain/validation.rsの判定は`.chars().count()`(Unicodeコードポイント単位、
+/// decision 0003)であり、UTF-16コードユニット単位で数えれば32ユニットという
+/// 別の数字になるところを、コードポイント単位の16として判定するために15文字超過の
+/// 境界に一致する(既存の16文字BMPケースと同じ境界に、astral文字でも到達することの確認)。
+#[sqlx::test]
+async fn post_register_display_name_surrogate_pair_emoji_is_rejected(pool: PgPool) {
+    let (_, csrf_token) = get_register_page(&pool).await;
+    let cookie = format!("csrf_token={csrf_token}");
+    let app = bbs::web::build_router(pool.clone());
+    let surrogate_pair_too_long = "😀".repeat(16);
+    let response = app
+        .oneshot(post_register_request(
+            &csrf_token,
+            &cookie,
+            "testuser_06",
+            "TestPassword123!",
+            &surrogate_pair_too_long,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html.contains("表示名は15文字以内で入力してください"));
+
+    let count: (i64,) = sqlx::query_as("select count(*) from users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0);
+}
+
+/// 回帰(decision 0037レビュー指摘): maxlength除去後は数千文字級の極端に長い
+/// 表示名もクライアント側で止まらず送信され得る。サーバ側検証
+/// (domain/validation.rs)が唯一の砦としてDB書き込みを防ぐことを確認する。
+#[sqlx::test]
+async fn post_register_display_name_extremely_long_is_rejected(pool: PgPool) {
+    let (_, csrf_token) = get_register_page(&pool).await;
+    let cookie = format!("csrf_token={csrf_token}");
+    let app = bbs::web::build_router(pool.clone());
+    let extremely_long = "あ".repeat(3000);
+    let response = app
+        .oneshot(post_register_request(
+            &csrf_token,
+            &cookie,
+            "testuser_07",
+            "TestPassword123!",
+            &extremely_long,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html.contains("表示名は15文字以内で入力してください"));
+
+    let count: (i64,) = sqlx::query_as("select count(*) from users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0);
 }
 
 #[sqlx::test]

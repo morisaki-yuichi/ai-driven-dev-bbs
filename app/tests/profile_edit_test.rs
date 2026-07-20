@@ -361,6 +361,66 @@ async fn post_profile_edit_16_chars_name_is_rejected_and_keeps_old_value(pool: P
     );
 }
 
+/// 回帰(decision 0037レビュー指摘): register側と同じく、サロゲートペア
+/// (astral、絵文字)を含む16コードポイントの表示名もコードポイント単位
+/// (`.chars().count()`、decision 0003)で15文字超過と判定され拒否される。
+/// UTF-16コードユニット単位なら32ユニットという別の数字になるが、判定基準は
+/// コードポイント単位の16である。
+#[sqlx::test]
+async fn post_profile_edit_surrogate_pair_emoji_is_rejected_and_keeps_old_value(pool: PgPool) {
+    insert_test_user(&pool, "testuser_01", "TestPassword123!").await;
+    let cookie_header = login(&pool, "testuser_01", "TestPassword123!").await;
+    let csrf_token = csrf_token_from_cookie_header(&cookie_header);
+
+    let surrogate_pair_too_long = "😀".repeat(16);
+    let app = bbs::web::build_router(pool.clone());
+    let response = app
+        .oneshot(post_profile_edit_request(
+            &cookie_header,
+            &csrf_token,
+            &surrogate_pair_too_long,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = get_body_text(response).await;
+    assert!(html.contains("表示名は15文字以内で入力してください"));
+
+    assert_eq!(
+        saved_display_name(&pool, "testuser_01").await,
+        "テストユーザー01"
+    );
+}
+
+/// 回帰(decision 0037レビュー指摘): maxlength除去後は数千文字級の極端に長い
+/// 表示名もクライアント側で止まらず送信され得る。サーバ側検証
+/// (domain/validation.rs)が唯一の砦としてDB更新を防ぐことを確認する。
+#[sqlx::test]
+async fn post_profile_edit_extremely_long_name_is_rejected_and_keeps_old_value(pool: PgPool) {
+    insert_test_user(&pool, "testuser_01", "TestPassword123!").await;
+    let cookie_header = login(&pool, "testuser_01", "TestPassword123!").await;
+    let csrf_token = csrf_token_from_cookie_header(&cookie_header);
+
+    let extremely_long = "あ".repeat(3000);
+    let app = bbs::web::build_router(pool.clone());
+    let response = app
+        .oneshot(post_profile_edit_request(
+            &cookie_header,
+            &csrf_token,
+            &extremely_long,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = get_body_text(response).await;
+    assert!(html.contains("表示名は15文字以内で入力してください"));
+
+    assert_eq!(
+        saved_display_name(&pool, "testuser_01").await,
+        "テストユーザー01"
+    );
+}
+
 /// AC04-3相当: 全角スペースのみ(decision 0004の「空」の定義)の表示名も拒否される。
 #[sqlx::test]
 async fn post_profile_edit_blank_name_is_rejected_and_keeps_old_value(pool: PgPool) {
