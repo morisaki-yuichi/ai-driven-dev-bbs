@@ -53,6 +53,12 @@ pub fn build_router(pool: PgPool) -> Router {
             "/threads/{id}/comments",
             post(thread_detail::create_comment),
         )
+        // F08(コメント削除、issues/08)。作成者本人のみ削除可能(AC08-3)なので
+        // 同じくrequire_auth配下に置く。
+        .route(
+            "/threads/{thread_id}/comments/{comment_id}/delete",
+            post(thread_detail::delete_comment),
+        )
         .route_layer(from_fn_with_state(pool.clone(), middleware::require_auth))
         // P01(ログイン)・P02(登録)は未ログインで到達できる(F01/F02)。
         .route("/register", get(register::show).post(register::submit))

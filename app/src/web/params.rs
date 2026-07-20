@@ -115,6 +115,20 @@ impl HasCsrfToken for CreateCommentForm {
     }
 }
 
+/// POST /threads/{thread_id}/comments/{comment_id}/delete のフォーム(F08)。
+/// D18(削除確認ダイアログ): 確認なしで即削除するため、ボタン以外に入力欄は無い。
+/// decision 0021によりCSRFトークンは必須で持つ(`LogoutForm`と同じ形)。
+#[derive(Debug, Deserialize)]
+pub struct DeleteCommentForm {
+    pub csrf_token: String,
+}
+
+impl HasCsrfToken for DeleteCommentForm {
+    fn csrf_token(&self) -> &str {
+        &self.csrf_token
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListParams {
     /// 空文字列は「全件表示」(decision 0011: containsSubstr s "" = true)。
