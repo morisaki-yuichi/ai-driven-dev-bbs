@@ -496,6 +496,15 @@ async fn post_thread_new_with_mismatched_csrf_token_is_rejected_with_403(pool: P
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
+    // ログイン中でもCSRFエラー画面はログアウトフォームを描画しない(web/error.rsの
+    // `csrf_error`のWhy-not)。有効なトークンを持てない画面に、押せば必ず403になる
+    // ボタンを置かないための不変条件。
+    let html = get_body_text(response).await;
+    assert!(
+        !html.contains(r#"<button type="submit">ログアウト</button>"#),
+        "CSRFエラー画面にログアウトフォームが描画されている: {html}"
+    );
+
     let count: (i64,) = sqlx::query_as("select count(*) from threads")
         .fetch_one(&pool)
         .await

@@ -26,7 +26,9 @@
 {% else %}
 {% for thread in threads %}
 <article class="thread-card">
-    <h2>{{ thread.title }}</h2>
+    {# F10(スレッド詳細)への導線。href形式は必ず"/threads/<数字>"にする
+       (F09で緩和したC-05テストがこの形式を検証している)。 #}
+    <h2><a href="/threads/{{ thread.id }}">{{ thread.title }}</a></h2>
     <p>{{ thread.body }}</p>
     <p>{{ thread.author_display_name }} さん・{{ thread.created_at }}</p>
     {# AC09-2/AC09-4: コメント数(削除済み込み・D13)と最終更新日時(C-15)。 #}
