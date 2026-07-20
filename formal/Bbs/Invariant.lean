@@ -556,31 +556,108 @@ theorem displayName_propagates (db : Db) (sid : SessionId) (uid : UserId) (n : S
     ∀ t ∈ db'.threads, t.authorId = uid → (toRow db' t).authorDisplayName = some n := by
   sorry
 
-/-! ### 7. 一覧・ソート・ページネーション (F09, F12, F13) -/
+/-! ### 7. 一覧・ソート・ページネーション (F09, F12, F13)
 
-/-- C-12: ページは常に10件以下。 -/
-theorem page_size_bound (db : Db) (k : SortKey) (p : Nat) :
-    (threadList db k p).items.length ≤ pageSize := by sorry
+F09（初期表示は作成日時降順のみ、decision 0009）実装に伴い、このセクションのうち
+`page_size_bound`・`first_page_no_prev`・`hasNext_iff_more`・`pagination_preserves_order`・
+`sortThreads_perm`の5件を証明した。いずれも`sortThreads`/`paginate`/`threadList`という
+**既に全`SortKey`について定義済みの純関数**（F12のソート切替UI自体は未実装だが、
+モデル・`app/src/domain/query.rs`の対応する関数はdecision 0009/0013の時点で
+`SortKey`全体に対して汎用に書かれている）についての言明であり、F06〜F08のような
+未実装`Step`操作（`runAll`・`Step`を経由する横断的invariant）に依存しない。
+decision 0025のスコープ限定（実装未着手の操作を含む言明を対象操作へ絞る）は
+この5件には該当しないため、`SortKey`を`.createdDesc`へ絞らず一般形のまま証明する。
+`sorted_by_commentCount`・`createdAsc_head_is_oldest`・`comment_bumps_lastUpdated`は
+F12（ソート切替）・F07（コメント作成）が実装するまでは実装側で使われないため
+本セッションでは証明の対象外とし、`sorry`のまま残す。
 
-/-- C-12: 1ページ目に「前に戻る」は出ない。 -/
-theorem first_page_no_prev (db : Db) (k : SortKey) :
-    (threadList db k 1).hasPrev = false := by sorry
+ただし**`sorry`は「未証明」であって「真」ではない**。F05の`thread_immutable`が
+仮定不足で偽だった前例に倣い、この3件も反例の有無を個別に検査した:
 
-/-- C-12: 「次に進む」が出るのは、実際に次のページに項目があるときだけ。 -/
-theorem hasNext_iff_more (db : Db) (k : SortKey) (p : Nat) :
-    (threadList db k p).hasNext = true ↔
-      db.threads.length > p * pageSize := by sorry
+- `sorted_by_commentCount`・`createdAsc_head_is_oldest`: 真。`leOf`が
+  （コメント数降順, id昇順）／（作成日時昇順, id昇順）の辞書式で**全順序**であり、
+  挿入ソートが整列列を返すことから従う。`db`の健全性には依存しない。
+- `comment_bumps_lastUpdated`: **偽だった**。論理時計の単調性を仮定に持たないため
+  反例が構成できる（decision 0027）。仮定`hclockT`・`hclockC`を追加して
+  真の形に直した。詳細は同定理のdocコメント。 -/
 
-/-- C-13: ページをまたいでもソート順が保たれる ＝
-    全ページを連結すると、ソート済み全体列と一致する。 -/
-theorem pagination_preserves_order (db : Db) (k : SortKey) (p : Nat) :
-    (threadList db k p).items =
-      (((sortThreads db k db.threads).map (toRow db)).drop ((p - 1) * pageSize)).take pageSize
-    := by sorry
+/-- 挿入は要素を1つ増やすだけ（除去も重複もしない）。`sortBy_length`の土台。 -/
+theorem insertBy_length {α : Type} (le : α → α → Bool) (a : α) (l : List α) :
+    (insertBy le a l).length = l.length + 1 := by
+  induction l with
+  | nil => rfl
+  | cons b bs ih =>
+    unfold insertBy
+    split
+    · rfl
+    · simp [ih]
+
+/-- 挿入ソート（`sortBy`）は並べ替えである（件数を変えない）。`sortThreads_perm`の土台。 -/
+theorem sortBy_length {α : Type} (le : α → α → Bool) (l : List α) :
+    (sortBy le l).length = l.length := by
+  induction l with
+  | nil => rfl
+  | cons a as ih =>
+    unfold sortBy
+    simp [insertBy_length, ih]
 
 /-- ソートは並べ替えである（件数も要素も変わらない）。 -/
 theorem sortThreads_perm (db : Db) (k : SortKey) (ts : List Thread) :
-    (sortThreads db k ts).length = ts.length := by sorry
+    (sortThreads db k ts).length = ts.length := by
+  unfold sortThreads
+  exact sortBy_length _ ts
+
+/-- C-12: ページは常に10件以下。 -/
+theorem page_size_bound (db : Db) (k : SortKey) (p : Nat) :
+    (threadList db k p).items.length ≤ pageSize := by
+  unfold threadList paginate
+  exact List.length_take_le _ _
+
+/-- C-12: 1ページ目に「前に戻る」は出ない。 -/
+theorem first_page_no_prev (db : Db) (k : SortKey) :
+    (threadList db k 1).hasPrev = false := by
+  unfold threadList paginate
+  rfl
+
+/-- C-12: 「次に進む」が出るのは、実際に次のページに項目があるときだけ。
+
+    **仮定`1 ≤ p`が要る**（decision 0026）。`paginate`は`n = 0`を1ページ目として
+    丸めるため（decision 0013。実装側は`domain::query::paginate`の
+    `if page == 0 { 1 } else { page }`に対応）、`p = 0`のときだけ言明が偽になる。
+    反例: `db.threads.length = 5`（1ページに収まりページ2は無い）のとき`p = 0`を渡すと、
+    `paginate`は1ページ目として扱い`hasNext = false`だが、右辺は`5 > 0 * pageSize = 0`
+    で真になる（`lake build`で実際にこの反例を構成して確認した）。
+
+    Why-not: 丸め規約そのもの（`if p = 0 then 1 else p`）を右辺に転記する形は採らない。
+    それは`paginate`の実装をそのまま言明へ写すことになり、不変条件が実装を**拘束する**
+    のではなく**追認する**だけになる（p=0の1点で、実装が何を返してもそれが正しいと
+    言えてしまう）。ページ番号は1始まりというのが原典C-12の前提であり、`1 ≤ p`を
+    仮定に置いて意味のある定義域だけを語るほうが、不変条件としての拘束力を保てる。
+    呼び出し側の`ListParams::parse`（`app/src/web/params.rs`）がpを1以上に丸めてから
+    `paginate`へ渡すため、この仮定は実運用で常に満たされる。 -/
+theorem hasNext_iff_more (db : Db) (k : SortKey) (p : Nat) (hp : 1 ≤ p) :
+    (threadList db k p).hasNext = true ↔
+      db.threads.length > p * pageSize := by
+  have hlen : ((sortThreads db k db.threads).map (toRow db)).length = db.threads.length := by
+    rw [List.length_map, sortThreads_perm]
+  unfold threadList paginate pageSize
+  simp only [decide_eq_true_iff, List.length_drop, hlen]
+  split <;> omega
+
+/-- C-13: ページをまたいでもソート順が保たれる ＝
+    全ページを連結すると、ソート済み全体列と一致する。
+
+    `p = 0`のときも成り立つ: `paginate`内部の丸め後ページ番号は`1`だが
+    `(1 - 1) = 0 = (0 - 1)`（Natの切り捨て減算）なので、丸めの有無で`drop`の
+    引数が一致し、`hasNext_iff_more`と異なり式の書き換えは不要だった。 -/
+theorem pagination_preserves_order (db : Db) (k : SortKey) (p : Nat) :
+    (threadList db k p).items =
+      (((sortThreads db k db.threads).map (toRow db)).drop ((p - 1) * pageSize)).take pageSize
+    := by
+  unfold threadList paginate
+  split
+  · next hp0 => subst hp0; rfl
+  · rfl
 
 /-- AC12-3 / C-16: コメント数順は削除済みを含む件数の降順。 -/
 theorem sorted_by_commentCount (db : Db) (ts : List Thread) :
@@ -596,8 +673,26 @@ theorem createdAsc_head_is_oldest (db : Db) (ts : List Thread) (t : Thread)
 
 コメント投稿はそのスレッドの最終更新日時を厳密に進める。 -/
 
+/-- **論理時計の単調性を仮定に持たないと偽になる**（decision 0027）。`Db`構造体にも
+    `Wf`にも「既存レコードの`createdAt`は`clock`以下」という制約が無いため、
+    `clock`より進んだ`createdAt`を持つ`db`を自由に構成できる。反例:
+    `clock = 0`・コメント1件が`createdAt = 100`のとき、`createComment`が付ける
+    時刻は`tick`により`clock + 1 = 1`にしかならず、`lastUpdatedAt`は前後とも
+    `100`のままで**厳密に増えない**。この反例は`Wf`も満たすので、`Wf db`を
+    足しても救われない（`formal/`で実際に構成し`native_decide`で確認した）。
+
+    そこで`nodup_map_eq_of_mem`（C-05補題）と同じ方針で、`Wf`を丸ごと要求せず
+    **この言明に要る単調性2つだけ**を局所的な仮定として取る。`Wf`に
+    `clockDominates`相当のフィールドを足す案もあるが、`wf_empty`および
+    F01〜F05で証明済みの`Wf`保存補題へ波及するため、F07（コメント作成）の
+    実装セッションで扱う。
+
+    証明はF07の範囲（`createComment`が未実装のため実装側の対応先が無い）。
+    decision 0025のスコープ限定に従い`sorry`のまま残すが、**言明は真の形に直してある**。 -/
 theorem comment_bumps_lastUpdated (db : Db) (sid : SessionId) (tid : ThreadId) (b : String)
     (t : Thread) (ht : t ∈ db.threads) (ht' : t.id = tid) (cid : CommentId)
+    (hclockT : t.createdAt ≤ db.clock)
+    (hclockC : ∀ c ∈ db.comments, c.createdAt ≤ db.clock)
     (hok : (createComment sid tid b) db = (.ok cid, (createComment sid tid b db).2)) :
     let db' := (createComment sid tid b db).2
     lastUpdatedAt db t < lastUpdatedAt db' t := by sorry

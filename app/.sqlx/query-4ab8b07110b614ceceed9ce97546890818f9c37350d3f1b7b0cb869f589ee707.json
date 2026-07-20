@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into comments (thread_id, author_id, body, created_at, deleted_at) values ($1, $2, $3, $4, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4ab8b07110b614ceceed9ce97546890818f9c37350d3f1b7b0cb869f589ee707"
+}

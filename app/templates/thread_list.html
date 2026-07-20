@@ -9,16 +9,45 @@
    唯一の導線であり、hoverでのみ現れる等の隠し要素にしない(ui-ux-guidelines §6)。 #}
 <p><a href="/threads/new">新規スレッド作成</a></p>
 
-{# 検索窓・ソート切替・ページネーションはF09〜F13の範囲として残す
-   (ユーザー承認済みのスコープ、dev-docs/foundation-plan.md)。ここではAC05-3
-   (作成後に一覧へ表示される)を満たすための最小限の実データ表示のみ行う。
-   0件時の「該当0件」表示・件数のハードコード回避を含む本格的な空状態表示は
-   F09で扱う。 #}
+{# 検索窓・ソート切替(F11・F12)は範囲外(ユーザー承認済みのスコープ)。
+   ここではF09(初期表示・コメント数・最終更新日時・ページネーション・空状態表示)
+   のみを扱う。件数を固定的に仮定しない(ui-ux-guidelines §7。H-08〜H-11によりDBには
+   先行するシナリオの投稿が残った状態で評価される)。 #}
+{% if threads.is_empty() %}
+{# decision 0013 §2 / ui-ux-guidelines §1: 0件のときに空白画面にせず、
+   該当0件であることが分かる表示にする。
+   「スレッドが1件も無い」と「スレッドはあるが指定ページが範囲外」は別の状況なので、
+   文言を分ける。同じ文言だと後者で「スレッドが0件」と誤読される。 #}
+{% if has_any_threads %}
+<p class="empty-state">このページには表示するものがありません。</p>
+{% else %}
+<p class="empty-state">表示できるスレッドがありません。</p>
+{% endif %}
+{% else %}
 {% for thread in threads %}
 <article class="thread-card">
     <h2>{{ thread.title }}</h2>
     <p>{{ thread.body }}</p>
     <p>{{ thread.author_display_name }} さん・{{ thread.created_at }}</p>
+    {# AC09-2/AC09-4: コメント数(削除済み込み・D13)と最終更新日時(C-15)。 #}
+    <p>コメント {{ thread.comment_count }} 件・最終更新 {{ thread.last_updated_at }}</p>
 </article>
 {% endfor %}
+{% endif %}
+
+{# C-12/ui-ux-guidelines §6: 境界では要素ごと非表示にする(無効化のみは不可)。
+   `agent-browser`が「ボタンが存在する」と誤観測しないようにするため。
+   前後どちらのリンクも出ない場合は`<nav>`ごと出さない ―― 中身が空のまま
+   `aria-label="ページ送り"`だけが残ると、支援技術・`agent-browser`のいずれにも
+   「ページ送りがある」と観測されうる。 #}
+{% if has_prev || has_next %}
+<nav class="pagination" aria-label="ページ送り">
+    {% if has_prev %}
+    <a href="/?page={{ prev_page }}">前に戻る</a>
+    {% endif %}
+    {% if has_next %}
+    <a href="/?page={{ next_page }}">次に進む</a>
+    {% endif %}
+</nav>
+{% endif %}
 {% endblock %}
