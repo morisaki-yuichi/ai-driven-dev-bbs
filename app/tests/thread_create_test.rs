@@ -352,14 +352,42 @@ fn thread_cards(html: &str) -> Vec<String> {
         .collect()
 }
 
+/// HTML断片から`href="..."`の値をすべて取り出す。属性値にダブルクォートを含む
+/// hrefは書かない前提の簡易パーサで足りる(Askamaのエスケープが`"`を`&quot;`にする)。
+fn hrefs_in(fragment: &str) -> Vec<String> {
+    fragment
+        .split(r#"href=""#)
+        .skip(1)
+        .map(|rest| {
+            rest.split('"')
+                .next()
+                .expect("href attribute should be closed")
+                .to_string()
+        })
+        .collect()
+}
+
 /// C-05/AC05-4: 作成したスレッドに、作成後の編集を行うUIが存在しない
 /// (formal/Bbs/Op.leanにスレッド更新操作が無いことに対応)。
 ///
 /// ページ全体に対する`!html.contains("編集")`では検証しない。それだと
 /// (a) F04のプロフィール編集UIがlayoutに入った時点、(b) 利用者が「編集」を含む
 /// タイトルを投稿した時点、のどちらでも壊れる ―― C-05とは無関係な理由で落ちる
-/// 脆いテストになる。代わりに「スレッドカードの中に操作要素そのものが無い」ことと
+/// 脆いテストになる。代わりに「スレッドカードの中に**変更手段**が無い」ことと
 /// 「編集用のエンドポイントが存在しない」ことを直接確かめる。
+///
+/// Why-not: 「カード内に`<a`も含めて操作要素が皆無」までは要求しない。C-05が
+/// 禁じるのは作成後の**編集**であって、スレッドに対するあらゆる操作要素ではない。
+/// 一律禁止にすると、F10(スレッド詳細)が一覧から詳細へ張る当然のリンクを
+/// C-05の名目で塞いでしまう。代わりに、
+/// - `<form`/`<button`/`<input`: 禁止を維持する。decision 0021により状態変更は
+///   すべてPOSTなので、編集の手段はこの3つのいずれかを必ず伴う。
+/// - `<a`(GET遷移): カード内の全hrefが`/threads/<数字>`の形で、かつ"edit"を
+///   含まないことを検証する。編集フォームへの導線(`/threads/1/edit`等)はこれで弾ける。
+///
+/// なお現時点の実装はカード内にリンクを持たない(F10が入るまで`hrefs`は空)。
+/// このテストはF10でリンクが入っても壊れないよう先に緩めてあるだけで、
+/// リンクの追加自体はF10の範囲。
 #[sqlx::test]
 async fn thread_list_has_no_edit_ui_for_created_thread(pool: PgPool) {
     insert_test_user(&pool, "testuser_01", "TestPassword123!").await;
@@ -399,12 +427,26 @@ async fn thread_list_has_no_edit_ui_for_created_thread(pool: PgPool) {
     assert_eq!(cards.len(), 1, "作成した1件だけが一覧に出ているはず");
     let card = &cards[0];
     assert!(card.contains(title), "対象スレッドのカードであること");
-    // スレッドカードの中に操作要素(リンク・ボタン・フォーム)が一切無い ＝
-    // 個々のスレッドに対して起こせるアクションが存在しない。
-    for control in ["<a ", "<button", "<form", "<input"] {
+    // 状態変更の手段(decision 0021により全てPOST)がカード内に無い ＝
+    // 個々のスレッドを変更する操作が存在しない。
+    for control in ["<form", "<button", "<input"] {
         assert!(
             !card.contains(control),
-            "スレッドカードに操作要素 {control} があってはならない: {card}"
+            "スレッドカードに状態変更の手段 {control} があってはならない: {card}"
+        );
+    }
+    // GET遷移(リンク)は詳細への導線として許すが、行き先は`/threads/<数字>`に限る。
+    for href in hrefs_in(card) {
+        let id = href
+            .strip_prefix("/threads/")
+            .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()));
+        assert!(
+            id.is_some(),
+            "スレッドカード内のリンク先は/threads/<数字>のみ許される: {href}"
+        );
+        assert!(
+            !href.contains("edit"),
+            "スレッドカードに編集画面への導線があってはならない: {href}"
         );
     }
 
