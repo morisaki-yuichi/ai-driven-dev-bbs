@@ -19,10 +19,14 @@
   `requireAuth_fails_without_session` を土台にF02の時点で既に証明済みであり、
   このセッションの成果ではない。
 
-  未実装機能（スレッド削除・コメント・検索・一覧のページングとソート）に対応する
-  定理はまだ `sorry` のままで、`lake build` はそのぶんの警告
-  （declaration uses 'sorry'）を出すが成功する。証明を試みる過程でさらに
-  未規定点が出ることを想定しており、残りは各機能の実装時に順次埋める。
+  以降のセッションで F06〜F13 ぶんの定理を順次証明し、**F12（ソート切替UI）の
+  レビュー対応で最後に残っていた `displayName_propagates` を証明したことにより、
+  このファイルの `sorry` はゼロになった**（`lake build` は
+  `declaration uses 'sorry'` 警告を1件も出さない）。以後 `sorry` を新たに
+  置く場合は、その言明が**真である**ことを反例の探索で確かめてから置くこと
+  ―― 偽の言明を補題として使うと、そこから導かれるものがすべて無価値になる
+  （`thread_immutable`・`displayName_propagates` が実際に踏んだ轍。
+  後者のdocコメントに経緯がある）。
 -/
 import Bbs.Op
 import Bbs.Query
@@ -2002,6 +2006,51 @@ theorem deleteThread_blocked_by_deleted_comment (db : Db) (sid : SessionId) (tid
 D03 方式①（JOIN 解決）の正しさ。表示名を変えた直後、
 その利用者の過去のスレッド・コメントはすべて新しい表示名で表示される。 -/
 
+/-- `updateDisplayName`が成功したときの`Db`の形。仮定（有効セッション`hs`・
+    検証通過`hv`）の下では、`users`を`map`で書き換える以外に何も起きない
+    ―― `threads`・`comments`・`sessions`・各カウンタは元のまま。
+    `displayName_propagates`の証明を「更新後のDbの形」と「`find?`が何を拾うか」の
+    2段に分けるための1段目。 -/
+theorem updateDisplayName_effect (db : Db) (sid : SessionId) (uid : UserId) (n : String)
+    (hs : db.sessions.find? (·.id = sid) = some ⟨sid, uid⟩)
+    (hv : Validation.displayNameValid n = true) :
+    (updateDisplayName sid n db).2 =
+      { db with users := db.users.map (fun u =>
+          if u.id = uid then { u with displayName := Validation.trim n } else u) } := by
+  have hf : Validation.displayNameFailure n = none := by
+    simpa [Validation.displayNameValid, Option.isNone_iff_eq_none] using hv
+  unfold updateDisplayName
+  simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get,
+    Action.pure, Action.modify, requireAuth, hs, hf]
+
+/-- 更新後のユーザー列から`uid`を引くと、必ず新しい表示名が返る。
+    `map`は`.id`を保存する（書き換えるのは`displayName`だけ）ので、`find?`の
+    述語`(·.id = uid)`に対する各要素の当落は`map`の前後で変わらない。ゆえに
+    「元の列に`uid`のユーザーが1人でも居る」ことさえ言えれば、`find?`は
+    書き換え後の要素を拾う。リスト構造への帰納で示す。
+    `displayName_propagates`の証明の2段目（`uid`の実在は`Wf`から来る）。 -/
+theorem find_mapped_displayName (uid : UserId) (nm : String) :
+    ∀ (us : List User), (∃ u ∈ us, u.id = uid) →
+      (((us.map (fun u => if u.id = uid then { u with displayName := nm } else u)).find?
+          (·.id = uid)).map (·.displayName)) = some nm := by
+  intro us
+  induction us with
+  | nil => intro h; simp at h
+  | cons a as ih =>
+    intro h
+    have hrest : a.id ≠ uid → ∃ u ∈ as, u.id = uid := by
+      intro ha
+      rcases h with ⟨u, hu, huid⟩
+      rcases List.mem_cons.mp hu with rfl | hu'
+      · exact absurd huid ha
+      · exact ⟨u, hu', huid⟩
+    rw [List.map_cons]
+    by_cases ha : a.id = uid
+    · rw [List.find?_cons_of_pos (by simp [ha])]
+      simp [ha]
+    · rw [List.find?_cons_of_neg (by simp [ha])]
+      exact ih (hrest ha)
+
 /-- AC04-2: 表示名を変えると、その利用者の過去のスレッドの表示名も新しい値になる。
 
     **結論は`some n`ではなく`some (Validation.trim n)`でなければならない**
@@ -2037,7 +2086,27 @@ D03 方式①（JOIN 解決）の正しさ。表示名を変えた直後、
     `sorry`のまま残す言明が偽だと、後続セッションがこれを補題として使った時点で
     そこから導かれるものがすべて無価値になる（このファイル冒頭の方針、および
     `thread_immutable`が同じ理由でF05時点に仮定を補われた経緯を参照）。証明を
-    後回しにすること自体は許すが、**言明は真の形で置く**。F04実装のサイクルで証明する。 -/
+    後回しにすること自体は許すが、**言明は真の形で置く**。
+
+    **証明済み（F12セッション、3度目の検査）**。上記の通りこの言明は
+    F06（トリム漏れ）・F11（`Wf`仮定の欠落）と2度にわたって**偽であることが
+    発見され修正された**経緯を持つ。2度とも修正の根拠は反例の構成であって、
+    「直した後の形が真である」ことの積極的な証拠ではなかった ―― 残る穴が
+    無いことを確定させるには証明を実際に構成するしかない。F12のレビューで
+    3度目の検査としてこれを行い、追加の仮定を一切足さずに証明が通ったことで、
+    現行の言明が真であることが確定した。
+
+    筋は2段階（下の`updateDisplayName_effect`・`find_mapped_displayName`）:
+    (1) 成功時の`Db`は`users`の`map`だけが違う形になる。とくに`threads`は
+        不変なので、`t ∈ db'.threads`は`t ∈ db.threads`と同じ。
+    (2) `Wf.threadAuthorsExist`が`t ∈ db.threads`から`t.authorId`（＝`uid`）の
+        ユーザーの実在を与える。`map`は`.id`を保存するので`find?`は
+        書き換え後のそのユーザーを拾い、`displayName`は`Validation.trim n`。
+    F11で補った`Wf`はここで(2)の形で効いている。当時のdocコメントは
+    `sessionUsersExist`が穴を塞ぐと書いたが、実際に証明が要求したのは
+    `threadAuthorsExist`のほうだった（結論が語るのは「スレッドの著者」の
+    実在であり、セッションのユーザーの実在ではない。`hauth : t.authorId = uid`
+    が両者を繋ぐ）。`Wf`を仮定するという結論自体は変わらない。 -/
 theorem displayName_propagates (db : Db) (sid : SessionId) (uid : UserId) (n : String)
     (hwf : Wf db)
     (hs : db.sessions.find? (·.id = sid) = some ⟨sid, uid⟩)
@@ -2045,7 +2114,18 @@ theorem displayName_propagates (db : Db) (sid : SessionId) (uid : UserId) (n : S
     let db' := (updateDisplayName sid n db).2
     ∀ t ∈ db'.threads, t.authorId = uid →
       (toRow db' t).authorDisplayName = some (Validation.trim n) := by
-  sorry
+  intro db' t ht hauth
+  have hdb : db' = { db with users := db.users.map (fun u =>
+      if u.id = uid then { u with displayName := Validation.trim n } else u) } :=
+    updateDisplayName_effect db sid uid n hs hv
+  have hthreads : t ∈ db.threads := by rw [hdb] at ht; exact ht
+  have hex : ∃ u ∈ db.users, u.id = uid := by
+    obtain ⟨u, hu, huid⟩ := hwf.threadAuthorsExist t hthreads
+    exact ⟨u, hu, by rw [huid, hauth]⟩
+  show (toRow db' t).authorDisplayName = some (Validation.trim n)
+  rw [hdb]
+  simp only [toRow, displayNameOf, hauth]
+  exact find_mapped_displayName uid (Validation.trim n) db.users hex
 
 /-! ### 7. 一覧・ソート・ページネーション (F09, F12, F13)
 
