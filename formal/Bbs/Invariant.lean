@@ -2014,11 +2014,32 @@ D03 方式①（JOIN 解決）の正しさ。表示名を変えた直後、
     （トリム後"A"は1文字）だが、保存されるのは`"A"`なので
     `authorDisplayName = some " A "`は成り立たない。
 
+    **さらに`Wf db`が要る**（F11セッションのレビューで訂正、2度目の修正）。
+    トリムを直した後の言明も、`Wf`を仮定しないままでは**まだ偽**だった ――
+    `hs`はセッションの存在しか言わず、その`userId`に対応する`User`が
+    `db.users`に実在することを保証しない。`updateDisplayName`の更新は
+    `s.users.map (fun u => if u.id = uid then … else u)`（`Op.lean`）なので、
+    該当ユーザーが居なければ**黙って何も起きない**。一方`toRow`の
+    `authorDisplayName`は`displayNameOf db' t.authorId`
+    ＝`(db'.users.find? (·.id = uid)).map (·.displayName)`であり、`none`になる。
+
+    反例（`decide`で確認済み）: `db.users = []`、`db.sessions = [⟨1, 1⟩]`、
+    `db.threads = [{id := 1, authorId := 1, …}]`、`n = "A"`。仮定`hs`・`hv`は
+    ともに成立するが、更新後の`authorDisplayName`は`none`であり
+    `some "A"`にならない。
+
+    `Wf`の`sessionUsersExist`（∀ s ∈ db.sessions, ∃ u ∈ db.users, u.id = s.userId）が
+    ちょうどこの穴を塞ぐ。`userIdsDistinct`と併せて、`find?`が拾う唯一の該当ユーザーが
+    更新後の`Validation.trim n`を持つことが言えるようになる。この`db`は`Wf`を
+    破っている（`sessionUsersExist`・`threadAuthorsExist`の両方に違反）ので、
+    `Wf`を仮定すれば反例は消える。
+
     `sorry`のまま残す言明が偽だと、後続セッションがこれを補題として使った時点で
     そこから導かれるものがすべて無価値になる（このファイル冒頭の方針、および
     `thread_immutable`が同じ理由でF05時点に仮定を補われた経緯を参照）。証明を
     後回しにすること自体は許すが、**言明は真の形で置く**。F04実装のサイクルで証明する。 -/
 theorem displayName_propagates (db : Db) (sid : SessionId) (uid : UserId) (n : String)
+    (hwf : Wf db)
     (hs : db.sessions.find? (·.id = sid) = some ⟨sid, uid⟩)
     (hv : Validation.displayNameValid n = true) :
     let db' := (updateDisplayName sid n db).2
