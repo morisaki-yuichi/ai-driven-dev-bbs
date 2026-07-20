@@ -1,0 +1,103 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        select\n            threads.id,\n            threads.title,\n            threads.body,\n            users.display_name as author_display_name,\n            threads.created_at,\n            count(comments.id) as \"comment_count!\",\n            greatest(\n                threads.created_at,\n                coalesce(max(comments.created_at), threads.created_at)\n            ) as \"last_updated_at!\",\n            hit.comment_id as \"hit_comment_id?\"\n        from threads\n        join users on users.id = threads.author_id\n        left join comments on comments.thread_id = threads.id\n        left join lateral (\n            select c.id as comment_id\n            from comments c\n            where $2::bool\n              and c.thread_id = threads.id\n              and c.deleted_at is null\n              and c.body like $1 escape '\\'\n            order by c.created_at asc, c.id asc\n            limit 1\n        ) as hit on true\n        where threads.body like $1 escape '\\'\n           or exists (\n                select 1 from comments c2\n                where c2.thread_id = threads.id\n                  and c2.deleted_at is null\n                  and c2.body like $1 escape '\\'\n           )\n        group by threads.id, users.display_name, hit.comment_id\n        order by threads.created_at desc, threads.id desc\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "threads",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "threads",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "body",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "threads",
+            "name": "body"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "author_display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "threads",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "comment_count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_updated_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "hit_comment_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "comments",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      false
+    ]
+  },
+  "hash": "ff09342ae3d5a21b5abc538fcfb52c106392a74163044f0fd040ce59bc0569da"
+}

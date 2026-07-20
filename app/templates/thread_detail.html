@@ -55,7 +55,10 @@
     {# C-01/AC08-2/AC10-3: 削除済みコメントは本文だけを固定文言に差し替え、
        作成者・作成日時は維持する。差し替え自体はハンドラ側(render_comment_body)で
        済ませてあるので、テンプレートは受け取った本文をそのまま出すだけでよい。 #}
-    <article class="comment">
+    {# AC11-3/D19: F11検索結果からの`#comment-{id}`フラグメントのスクロール先
+       (web/thread_list.rs::show)。ブラウザ標準のフラグメントスクロールで
+       到達させるため、JSを使わない(decision 0008)。 #}
+    <article class="comment" id="comment-{{ comment.id }}">
         <p class="post-body">{{ comment.body }}</p>
         <p>{{ comment.author_display_name }} さん・{{ comment.created_at }}</p>
         {# F08 / AC08-3・AC08-4 / ui-ux-guidelines §1: 他人のコメント・削除済みの

@@ -1,6 +1,7 @@
-//! GET / (P03スレッド一覧画面)。F09(スレッド一覧表示、issues/09)。
+//! GET / (P03スレッド一覧画面)。F09(スレッド一覧表示、issues/09)・
+//! F11(検索、issues/11_search_function.md)。
 //!
-//! **範囲は「初期表示順のみ」**(ユーザー承認済みのスコープ)。decision 0009が定める
+//! F09の範囲は「初期表示順のみ」(ユーザー承認済みのスコープ)。decision 0009が定める
 //! 作成日時降順(idタイブレーク)と、ページネーション・空状態表示を実装する。
 //! ソート切替UI・他のソートキーはF12の範囲であり、ここでは実装しない
 //! ――`domain::query::SortKey`はF12全体を見越した先行実装だが、ここではDB側の
@@ -10,6 +11,15 @@
 //! 一覧の取得方式は「全件取得 → `domain::query::paginate`(純粋関数)に渡す」。
 //! SQL側にLIMIT/OFFSETを足さない(functional coreの設計思想に整合させ、
 //! ページングを純粋関数としてテスト可能に保つ判断)。
+//!
+//! **F11(検索)**: `db::threads::search`を使う ―― 空クエリ(`q == ""`)は全件表示
+//! (decision 0011)なので、一覧表示(F09)は検索の特殊ケースとして統一的に扱える
+//! (`db::threads::search`のdocコメント参照)。ヒット箇所(本文/コメント)の決定は
+//! `domain::query::hit_location`
+//! (`formal/Bbs/Query.lean`の`hitIn`に対応する純粋関数)が担い、コメントヒットの
+//! 場合は詳細画面への導線に`#comment-{id}`フラグメントを付ける(AC11-3、D19)。
+//! フラグメント識別子はブラウザ標準機能でスクロールするため、decision 0008
+//! (JSなし)の範囲に収まる。
 
 use std::collections::HashMap;
 
@@ -22,14 +32,14 @@ use sqlx::PgPool;
 
 use crate::db;
 use crate::db::sessions::AuthenticatedUser;
-use crate::domain::query;
+use crate::domain::query::{self, Hit};
 use crate::web::csrf::CsrfToken;
 use crate::web::error::AppError;
 use crate::web::format::format_created_at;
 use crate::web::params::ListParams;
 use crate::web::views::CurrentUser;
 
-/// 一覧に描画する1件ぶんの行。`db::threads::ThreadListRow`をテンプレートが
+/// 一覧に描画する1件ぶんの行。`db::threads::SearchRow`をテンプレートが
 /// 扱いやすい形(日時を表示用文字列に変換済み)へ写す。
 struct ThreadListItem {
     /// F10詳細画面への導線(`/threads/{id}`)に使う(ユーザー承認済みのスコープ)。
@@ -42,6 +52,9 @@ struct ThreadListItem {
     comment_count: i64,
     /// C-15/AC09-4/decision 0010: スレッド作成時刻または最新コメント投稿時刻。
     last_updated_at: String,
+    /// AC11-3/D19: ヒットしたコメントへのスクロール先。`Some("#comment-42")`の形
+    /// (本文ヒット・検索なしのときは`None`、詳細画面のURLに何も付けない)。
+    hit_fragment: Option<String>,
 }
 
 #[derive(Template)]
@@ -65,16 +78,18 @@ struct ThreadListTemplate {
     /// このフラッシュ通知を出す。削除は`/threads/{id}`ではなくここに戻ってくる
     /// (削除後はスレッド自体が404になり元の詳細画面へは戻れないため)。
     thread_deleted_message: Option<String>,
+    /// F11: 検索窓の初期値(HTML属性値としてそのまま出す。Askamaが`"`等をHTMLエスケープする)。
+    q: String,
+    /// F11: 検索中かどうか(`q`が空でないか)。空状態の文言分岐に使う。
+    is_searching: bool,
 }
 
 /// GET /。`require_auth`ミドルウェア配下のルートなので、ここに到達した時点で
-/// `AuthenticatedUser`がリクエスト拡張に必ず存在する(C-09、AC09-1)。
+/// `AuthenticatedUser`がリクエスト拡張に必ず存在する(C-09、AC09-1、AC11-1)。
 /// `Cache-Control: no-store`は`require_auth`側で一括付与される(C-11)。
 ///
 /// `ListParams::parse`はF11(検索)/F12(ソート)向けに`q`/`sort`も汎用にパースするが、
-/// このハンドラが読むのは`page`のみ(decision 0013の範囲外ページ丸めを含む)。
-/// `q`/`sort`がクエリ文字列に付いていても無視する(検索・ソートUIを一覧に出していない
-/// ので、この段階では到達しえない値のはず)。
+/// このハンドラが読むのは`page`・`q`(`sort`はF12が範囲外なので未使用)。
 pub async fn show(
     State(pool): State<PgPool>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -83,22 +98,32 @@ pub async fn show(
 ) -> Result<Response, AppError> {
     let params = ListParams::parse(&raw_params);
 
-    // decision 0009: 初期表示順(作成日時降順・idタイブレーク)はSQL側の
-    // `order by`で確定させる(db::threads::list_all)。SortKey::CreatedDesc以外の
-    // 分岐はF12の範囲でありここでは使わない。
-    let rows = db::threads::list_all(&pool).await?;
+    // F11/decision 0011: `search`は空クエリで全件を返すので、一覧表示(F09)と
+    // 検索(F11)を同じ取得経路に統一できる(decision 0009の初期表示順=
+    // `order by created_at desc, id desc`はSQL側で確定、db::threads::search参照)。
+    let rows = db::threads::search(&pool, &params.q).await?;
     let items: Vec<ThreadListItem> = rows
         .into_iter()
-        .map(|r| ThreadListItem {
-            id: r.id,
-            title: r.title,
-            body: r.body,
-            author_display_name: r.author_display_name,
-            // decision 0009: UTC保存・JST表示。相対時刻表示("3分前"等)は
-            // 原典が求めておらず、導入しない。
-            created_at: format_created_at(r.created_at),
-            comment_count: r.comment_count,
-            last_updated_at: format_created_at(r.last_updated_at),
+        .map(|r| {
+            // AC11-3/D19: ヒット箇所(本文優先、`formal/Bbs/Query.lean`の`hitIn`と同型)。
+            // 空クエリでは常に本文ヒットになる(`contains_substr(_, "") == true`)ので、
+            // 検索していない通常の一覧ではフラグメントは付かない。
+            let hit_fragment = match query::hit_location(&r.body, &params.q, r.hit_comment_id) {
+                Some(Hit::Comment(cid)) => Some(format!("#comment-{cid}")),
+                Some(Hit::Body) | None => None,
+            };
+            ThreadListItem {
+                id: r.id,
+                title: r.title,
+                body: r.body,
+                author_display_name: r.author_display_name,
+                // decision 0009: UTC保存・JST表示。相対時刻表示("3分前"等)は
+                // 原典が求めておらず、導入しない。
+                created_at: format_created_at(r.created_at),
+                comment_count: r.comment_count,
+                last_updated_at: format_created_at(r.last_updated_at),
+                hit_fragment,
+            }
         })
         .collect();
 
@@ -128,6 +153,8 @@ pub async fn show(
         // ハンドラを落とせる)。`prev_page`側の`saturating_sub`と対称に飽和させる。
         // このページでは`has_next = false`なのでテンプレートは値を読まない。
         next_page: page.page_number.saturating_add(1),
+        is_searching: !params.q.is_empty(),
+        q: params.q,
     };
     match tmpl.render() {
         Ok(body) => Ok(Html(body).into_response()),

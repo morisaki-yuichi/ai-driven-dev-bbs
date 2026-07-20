@@ -15,12 +15,14 @@
 //! (詳細は同関数のdocコメント)。コメント作成側は`find_by_id_for_share`で対になる
 //! 共有ロックを取り、両者を直列化する。
 //!
-//! `insert`はF05(web/thread_create.rs)が使う。`list_all`はP03スレッド一覧
+//! `insert`はF05(web/thread_create.rs)が使う。`search`はP03スレッド一覧
 //! (web/thread_list.rs)が使う読み取りで、F09が要求する表示項目のうち
 //! コメント数・最終更新日時（decision 0010）まで含めて返す。ページネーション
 //! (LIMIT/OFFSET)はここに持ち込まない——全件取得して`domain::query::paginate`
-//! (純粋関数)に渡す方針（ユーザー承認済みのスコープ）。ソート・検索(F11〜F12)は
-//! 引き続き範囲外。
+//! (純粋関数)に渡す方針（ユーザー承認済みのスコープ）。F09(初期表示)は`search`に
+//! 空クエリを渡す特殊ケースとして統一的に扱う（decision 0011、下記`search`の
+//! docコメント参照）。ソートはF12の範囲でありSQL側は`order by created_at desc, id
+//! desc`(decision 0009)に固定。
 
 use sqlx::PgExecutor;
 
@@ -48,11 +50,12 @@ where
     .await
 }
 
-/// P03スレッド一覧に表示する1件ぶんの行。AC09-2が要求する項目
-/// (タイトル・本文・作成日時・作成者・コメント数・最終更新日時)を過不足なく持つ。
-/// 本文の冒頭抜粋整形(任意要件)・ページネーションはここでは行わない
+/// P03スレッド一覧(F09)・F11検索の両方で`search`が返す1件ぶんの行。AC09-2が
+/// 要求する項目(タイトル・本文・作成日時・作成者・コメント数・最終更新日時)に加え、
+/// AC11-3のスクロール先決定(`domain::query::hit_location`)に要る`hit_comment_id`を
+/// 持つ。本文の冒頭抜粋整形(任意要件)・ページネーションはここでは行わない
 /// (前者は表示側、後者は`domain::query::paginate`の責務)。
-pub struct ThreadListRow {
+pub struct SearchRow {
     pub id: i64,
     pub title: String,
     pub body: String,
@@ -64,37 +67,108 @@ pub struct ThreadListRow {
     /// 削除済みコメントも計算に含める(投稿された事実は消えない)ので、
     /// コメント削除ではこの値は動かない(単調性が保たれる)。
     pub last_updated_at: sqlx::types::time::OffsetDateTime,
+    /// **未削除の**(decision 0012)コメントのうち`kw`に最初に一致する1件のID
+    /// (作成日時昇順・idタイブレーク ―― `formal/Bbs/Query.lean`の`hitIn`が
+    /// `searchableComments (commentsOf db t.id) |>.find? (...)`で取る「最初の1件」と
+    /// 同じ選び方をSQL側で再現している)。スレッド本文自体が一致する場合にも
+    /// 値が入りうるが、呼び出し側(`domain::query::hit_location`)が本文優先で
+    /// 場合分けするため、その場合はこの値を無視してよい。
+    pub hit_comment_id: Option<i64>,
 }
 
-/// 全スレッドを作成日時の降順(decision 0009の初期表示順)で返す。
-/// ページネーションは掛けない(全件取得して`domain::query::paginate`に渡す方針。
-/// 上記struct docコメント参照)。
-pub async fn list_all<'e, E>(executor: E) -> Result<Vec<ThreadListRow>, sqlx::Error>
+/// F11検索(issues/11_search_function.md)。decision 0011/0012が確定した方式で
+/// `threads.body`と**未削除の**`comments.body`のみを対象に、素朴な部分一致
+/// (`LIKE`)で絞り込む。
+///
+/// - **大文字小文字・全角半角は区別する**(decision 0011)。PostgreSQLの`LIKE`は
+///   既定で大文字小文字を区別するため、`ILIKE`・`COLLATE`は使わない
+///   (使うと decision 0011 に反する、同decisionの実装上の落とし穴を参照)。
+/// - **空クエリ(`kw == ""`)は全件表示**。`escape_like_pattern("")`が空文字列の
+///   ままなのでパターンは`"%%"`になり、`LIKE '%%'`は常に真 ――
+///   `Bbs.Query.containsSubstr _ "" = true`と同じ挙動をSQL側でも再現する。
+/// - **`%`・`_`はエスケープする**(decision 0032)。バインドパラメータは値の型注入は
+///   防ぐが`LIKE`パターン内の`%`・`_`の意味までは中和しないため、
+///   `domain::query::escape_like_pattern`でリテラルな部分文字列として扱う。
+///
+/// `hit_comment_id`は`LEFT JOIN LATERAL`で、未削除コメントのうち`kw`に最初に一致する
+/// 1件を同じクエリ内で求める。呼び出し側(`domain::query::hit_location`)がこれと
+/// `threads.body`自身の一致を見て、本文優先でヒット箇所を決める
+/// (`Bbs.Query.hitIn`と同型、AC11-3のスクロール先の根拠)。
+///
+/// **空クエリ(`kw == ""`)では`LATERAL`副問い合わせを実行しない**(`$2`でガード)。
+/// 空クエリは`threads.body like '%%'`が常に真になり`contains_substr(_, "") == true`
+/// (decision 0011)なので、`domain::query::hit_location`は本文優先の分岐で必ず
+/// `Hit::Body`を返し`hit_comment_id`の値は使われない。P03一覧はアプリの最頻ページ
+/// (F09が空クエリでこの関数を呼ぶ、下記docコメント参照)であり、毎スレッドに対して
+/// 結果を使わない相関副問い合わせを走らせるのは無駄なので、`$2::bool`(`kw`が
+/// 非空かどうか)を`LATERAL`側の`where`に含める。`$2`は`threads`・`comments`のどの
+/// 列にも依存しない定数の述語なので、PostgreSQLは`$2`が偽のとき副問い合わせ本体を
+/// 実行せずに空を返す(One-Time Filter)。**結果集合は変えない**(`$2`が真＝通常の
+/// 検索のときは元のクエリと同じ、`$2`が偽＝空クエリのときは元々使われない値が
+/// `NULL`になるだけ)。
+pub async fn search<'e, E>(executor: E, kw: &str) -> Result<Vec<SearchRow>, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
+    let pattern = format!("%{}%", crate::domain::query::escape_like_pattern(kw));
+    let is_search = !kw.is_empty();
     sqlx::query_as!(
-        ThreadListRow,
+        SearchRow,
         r#"
-        select threads.id, threads.title, threads.body,
-               users.display_name as author_display_name, threads.created_at,
-               count(comments.id) as "comment_count!",
-               greatest(
-                   threads.created_at,
-                   coalesce(max(comments.created_at), threads.created_at)
-               ) as "last_updated_at!"
+        select
+            threads.id,
+            threads.title,
+            threads.body,
+            users.display_name as author_display_name,
+            threads.created_at,
+            count(comments.id) as "comment_count!",
+            greatest(
+                threads.created_at,
+                coalesce(max(comments.created_at), threads.created_at)
+            ) as "last_updated_at!",
+            hit.comment_id as "hit_comment_id?"
         from threads
         join users on users.id = threads.author_id
         left join comments on comments.thread_id = threads.id
-        group by threads.id, users.display_name
+        left join lateral (
+            select c.id as comment_id
+            from comments c
+            where $2::bool
+              and c.thread_id = threads.id
+              and c.deleted_at is null
+              and c.body like $1 escape '\'
+            order by c.created_at asc, c.id asc
+            limit 1
+        ) as hit on true
+        where threads.body like $1 escape '\'
+           or exists (
+                select 1 from comments c2
+                where c2.thread_id = threads.id
+                  and c2.deleted_at is null
+                  and c2.body like $1 escape '\'
+           )
+        group by threads.id, users.display_name, hit.comment_id
         order by threads.created_at desc, threads.id desc
-        "#
+        "#,
+        pattern,
+        is_search,
     )
     .fetch_all(executor)
     .await
 }
 
-/// P04スレッド詳細(F10)に表示する1件。一覧(`ThreadListRow`)と異なり、
+/// P03スレッド一覧(F09)の読み取り。`search`の空クエリの特殊ケースへの委譲
+/// (decision 0011: `containsSubstr _ "" = true`なので空クエリは全件表示)。
+/// 呼び出し元(`web/thread_list.rs`)がF11対応でクエリ文字列を渡すようになった
+/// 段階で、この関数自体は不要になる見込み(暫定の橋渡し)。
+pub async fn list_all<'e, E>(executor: E) -> Result<Vec<SearchRow>, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    search(executor, "").await
+}
+
+/// P04スレッド詳細(F10)に表示する1件。一覧・検索(`SearchRow`)と異なり、
 /// コメント数・最終更新日時は持たない(詳細画面はコメント自体を列挙するので不要、
 /// ユーザー承認済みのスコープ)。
 ///
@@ -564,5 +638,208 @@ mod tests {
             .expect("FK違反のErrではなくOkが返るべき(500にしない)");
         assert!(!deleted, "コミットされたコメントを見て削除を拒否するはず");
         assert!(find_by_id(&pool, tid).await.unwrap().is_some());
+    }
+
+    /// AC11-2/シナリオ04-1: 本文にキーワードを含むスレッドがヒットする。
+    #[sqlx::test]
+    async fn search_finds_thread_by_body_substring(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        insert(&pool, uid, "スレッドA", "プログラミング言語Rustの特徴")
+            .await
+            .unwrap();
+
+        let rows = search(&pool, "Rust").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hit_comment_id, None, "本文一致はコメント側を見ない");
+    }
+
+    /// decision 0011: 大文字小文字を区別する。
+    #[sqlx::test]
+    async fn search_is_case_sensitive(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        insert(&pool, uid, "スレッドA", "プログラミング言語Rustの特徴")
+            .await
+            .unwrap();
+
+        assert!(search(&pool, "rust").await.unwrap().is_empty());
+    }
+
+    /// decision 0011: 全角半角の正規化はしない。
+    #[sqlx::test]
+    async fn search_does_not_normalize_fullwidth(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        insert(&pool, uid, "スレッドA", "プログラミング言語Rustの特徴")
+            .await
+            .unwrap();
+
+        assert!(search(&pool, "Ｒｕｓｔ").await.unwrap().is_empty());
+    }
+
+    /// decision 0011: 空クエリは全件表示。
+    #[sqlx::test]
+    async fn search_empty_query_returns_all_threads(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        insert(&pool, uid, "スレッドA", "本文A").await.unwrap();
+        insert(&pool, uid, "スレッドB", "本文B").await.unwrap();
+
+        let rows = search(&pool, "").await.unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    /// レビュー指摘の回帰: 空クエリでは`LATERAL`副問い合わせを`$2::bool`でガードして
+    /// 実行しない(このコメント直上のdocコメント参照)。未削除コメントが存在し、
+    /// もし`LATERAL`が動いていれば`hit_comment_id`に値が入りうる状況でも、
+    /// 空クエリでは常に`None`になることを確認する ―― `domain::query::hit_location`が
+    /// 本文優先で判定するため実害は無いが、この値自体が変わらないことを
+    /// 結果集合が変化していないことの直接的な証拠として固定する。
+    #[sqlx::test]
+    async fn search_empty_query_never_reports_a_hit_comment_id(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "スレッド", "本文").await.unwrap();
+        crate::db::comments::insert(&pool, tid, uid, "何らかのコメント")
+            .await
+            .unwrap();
+
+        let rows = search(&pool, "").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hit_comment_id, None);
+    }
+
+    /// AC11-2/シナリオ04-1: コメント本文にキーワードを含むスレッドもヒットし、
+    /// `hit_comment_id`がそのコメントを指す(AC11-3のスクロール先決定に使う)。
+    #[sqlx::test]
+    async fn search_finds_thread_by_comment_body_and_reports_hit_comment_id(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "スレッドB", "関係ない本文")
+            .await
+            .unwrap();
+        let cid =
+            crate::db::comments::insert(&pool, tid, uid, "メモリ安全性が高いのがRustの魅力です")
+                .await
+                .unwrap();
+
+        let rows = search(&pool, "Rust").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, tid);
+        assert_eq!(rows[0].hit_comment_id, Some(cid));
+    }
+
+    /// AC11-4/decision 0012: 削除済みコメントは元本文ごと検索対象から除外する。
+    /// 「テストコメント1」を削除済みにした状態で、その元本文では検索してもヒットしない。
+    #[sqlx::test]
+    async fn search_excludes_deleted_comments_original_body(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "スレッド", "本文").await.unwrap();
+        insert_comment(&pool, tid, uid, "テストコメント1", far_future(), true).await;
+
+        assert!(search(&pool, "テストコメント1").await.unwrap().is_empty());
+    }
+
+    /// AC11-4: 固定文言そのもので検索しても、削除済みコメントの元本文は
+    /// 固定文言と一致しないためヒットしない(元々ヒットしうる文字列ではないことの確認)。
+    #[sqlx::test]
+    async fn search_fixed_deleted_text_does_not_match_original_body(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "スレッド", "本文").await.unwrap();
+        insert_comment(&pool, tid, uid, "テストコメント1", far_future(), true).await;
+
+        assert!(
+            search(&pool, "＜このコメントは削除されました＞")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// decision 0012: 未削除コメントは通常どおりヒットする(削除済みだけが除外対象)。
+    #[sqlx::test]
+    async fn search_matches_undeleted_comment(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "スレッド", "本文").await.unwrap();
+        insert_comment(&pool, tid, uid, "テストコメント1", far_future(), true).await;
+        let cid2 = crate::db::comments::insert(&pool, tid, uid, "テストコメント2")
+            .await
+            .unwrap();
+
+        let rows = search(&pool, "テストコメント2").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hit_comment_id, Some(cid2));
+    }
+
+    /// decision 0032の回帰テスト: `%`はワイルドカードとしてではなく、リテラルな
+    /// 1文字として扱われる。「50%」で検索したとき、「50%」を含む本文だけがヒットし、
+    /// エスケープなしなら意図せずヒットしてしまう「500円」のような文字列はヒットしない。
+    #[sqlx::test]
+    async fn search_escapes_percent_as_a_literal_character(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        insert(&pool, uid, "セール", "本日は50%引きです")
+            .await
+            .unwrap();
+        insert(&pool, uid, "無関係", "500円のセールです")
+            .await
+            .unwrap();
+
+        let rows = search(&pool, "50%").await.unwrap();
+        assert_eq!(rows.len(), 1, "「50%」を含む本文だけがヒットするはず");
+        assert_eq!(rows[0].title, "セール");
+    }
+
+    /// decision 0032の回帰テスト: `_`もリテラルな1文字として扱われる。
+    #[sqlx::test]
+    async fn search_escapes_underscore_as_a_literal_character(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        insert(&pool, uid, "変数名", "命名規則はa_bのようにする")
+            .await
+            .unwrap();
+        insert(&pool, uid, "無関係", "aXbという表記もある")
+            .await
+            .unwrap();
+
+        let rows = search(&pool, "a_b").await.unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "「a_b」を含む本文だけがヒットするはず(`_`が任意の1文字として`X`等に広がらない)"
+        );
+        assert_eq!(rows[0].title, "変数名");
+    }
+
+    /// `hitIn`(Leanモデル)と同じ「最初の1件」: 複数の未削除コメントが一致する場合、
+    /// 作成日時が最も古いものを`hit_comment_id`として返す。
+    #[sqlx::test]
+    async fn search_hit_comment_id_picks_the_earliest_matching_undeleted_comment(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "スレッド", "関係ない本文")
+            .await
+            .unwrap();
+        let t0 = sqlx::types::time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let t1 = sqlx::types::time::OffsetDateTime::from_unix_timestamp(1_700_000_100).unwrap();
+        insert_comment(&pool, tid, uid, "Rustは楽しい(2番目)", t1, false).await;
+        insert_comment(&pool, tid, uid, "Rustは楽しい(1番目)", t0, false).await;
+
+        let rows = search(&pool, "Rust").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let earliest_id: i64 =
+            sqlx::query_scalar("select id from comments where body = 'Rustは楽しい(1番目)'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows[0].hit_comment_id, Some(earliest_id));
+    }
+
+    /// 他スレッドを巻き込まない。
+    #[sqlx::test]
+    async fn search_does_not_include_non_matching_threads(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        insert(&pool, uid, "スレッドA", "Rustについて")
+            .await
+            .unwrap();
+        insert(&pool, uid, "スレッドB", "Pythonについて")
+            .await
+            .unwrap();
+
+        let rows = search(&pool, "Rust").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "スレッドA");
     }
 }

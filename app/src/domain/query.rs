@@ -50,6 +50,62 @@ pub fn contains_substr(haystack: &str, needle: &str) -> bool {
     haystack.contains(needle)
 }
 
+/// decision 0032: `LIKE`のワイルドカード文字(`%`・`_`)、およびエスケープ文字自身
+/// (`\`)をエスケープし、`db::threads::search`が投げる`LIKE`パターンの中で
+/// ユーザー入力を**リテラルな部分文字列**として扱えるようにする。
+///
+/// **エスケープしないとどうなるか**: バインドパラメータは値の型注入(SQLインジェクション)
+/// を防ぐが、`LIKE`パターン内の`%`・`_`の**意味**までは中和しない。ユーザーが
+/// `50%`や`a_b`を検索すると、エスケープなしでは`%`が「任意の0文字以上」・`_`が
+/// 「任意の1文字」として解釈され、`contains_substr`(素朴な部分文字列判定、
+/// decision 0011)が返す結果と食い違う。この関数を通すことで、`format!("%{}%", ...)`
+/// で組み立てた最終パターンが`contains_substr(haystack, needle)`と同じ判定に一致する
+/// (Leanの`containsSubstr`をオラクルとして揃える)。
+///
+/// **処理順序が本質**: `\`を最初に(単独で)処理しないと、後段で`%`→`\%`が生成した
+/// `\`を再度エスケープしてしまい二重エスケープになる。1回のループで文字ごとに
+/// 判定することで、生成した`\`を再走査しない。
+pub fn escape_like_pattern(needle: &str) -> String {
+    let mut escaped = String::with_capacity(needle.len());
+    for ch in needle.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+/// AC11-3(D19)のスクロール先決定。`formal/Bbs/Query.lean`の`Hit`に対応する。
+/// タイトルは検索対象外(decision 0012)なので、本文・コメントの2択で足りる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hit {
+    Body,
+    /// コメントのID。フラグメント識別子(`#comment-{id}`)の組み立てに使う
+    /// (呼び出し元のweb層、decision 0008のJSなしスクロール連携)。
+    Comment(i64),
+}
+
+/// `formal/Bbs/Query.lean`の`hitIn`に対応する純粋関数。**本文優先**
+/// (`t.body`が一致すれば無条件に`Hit::Body`、コメント側の場合分けを見ない)。
+///
+/// `first_matching_comment_id`は、DB層(`db::threads::search`)が
+/// 「未削除コメントに限定して(decision 0012)`LIKE`一致するものの中で最古(作成日時昇順、
+/// idタイブレーク)の1件」を既に絞り込んだ結果を渡す想定 ―― `Query.lean`の
+/// `searchableComments (commentsOf db t.id) |>.find? (...)`と同じ「最初の1件」を、
+/// SQL側の`order by created_at asc, id asc limit 1`で再現する。
+///
+/// 本文もコメントも一致しない`None`は本来`db::threads::search`のWHERE句が
+/// 除外するため到達しない想定だが、SQLとこの関数の対応をここで検査するのではなく
+/// `Option`を返すことで、呼び出し側が不整合時にパニックしない形にしてある。
+pub fn hit_location(body: &str, kw: &str, first_matching_comment_id: Option<i64>) -> Option<Hit> {
+    if contains_substr(body, kw) {
+        Some(Hit::Body)
+    } else {
+        first_matching_comment_id.map(Hit::Comment)
+    }
+}
+
 /// AC08-2/AC10-3: 削除済みコメントの本文は固定文言に差し替える。
 /// 作成者・作成日時は維持する(呼び出し側の責務、ここでは本文のみを扱う)。
 pub fn render_comment_body(body: &str, deleted: bool) -> &str {
@@ -144,6 +200,50 @@ mod tests {
             render_comment_body("元の本文", true),
             "＜このコメントは削除されました＞"
         );
+    }
+
+    /// decision 0032: `%`・`_`はバックスラッシュでエスケープされる。
+    #[test]
+    fn escape_like_pattern_escapes_percent_and_underscore() {
+        assert_eq!(escape_like_pattern("50%"), "50\\%");
+        assert_eq!(escape_like_pattern("a_b"), "a\\_b");
+    }
+
+    /// decision 0032: エスケープ文字自身(`\`)も二重にエスケープする
+    /// (先に`\`を処理しないと、後段の`%`→`\%`が生成した`\`を再エスケープしてしまう)。
+    #[test]
+    fn escape_like_pattern_escapes_the_escape_character_itself() {
+        assert_eq!(escape_like_pattern("a\\b"), "a\\\\b");
+        assert_eq!(escape_like_pattern("50\\%"), "50\\\\\\%");
+    }
+
+    /// 通常の文字列はそのまま(ワイルドカードを含まない入力での回帰崩れが無いこと)。
+    #[test]
+    fn escape_like_pattern_is_identity_without_wildcards() {
+        assert_eq!(escape_like_pattern("Rust"), "Rust");
+        assert_eq!(escape_like_pattern(""), "");
+        assert_eq!(escape_like_pattern("プログラミング"), "プログラミング");
+    }
+
+    /// AC11-2: 本文が一致すれば、コメント側の候補が来ていても本文優先(`hitIn`と同型)。
+    #[test]
+    fn hit_location_prioritizes_body_over_comment() {
+        let body = "プログラミング言語Rustの特徴";
+        assert_eq!(hit_location(body, "Rust", Some(42)), Some(Hit::Body));
+        assert_eq!(hit_location(body, "Rust", None), Some(Hit::Body));
+    }
+
+    /// AC11-3: 本文が一致しなければ、DB側が絞り込んだ最初の一致コメントを指す。
+    #[test]
+    fn hit_location_falls_back_to_first_matching_comment() {
+        let body = "本文には含まれない";
+        assert_eq!(hit_location(body, "Rust", Some(7)), Some(Hit::Comment(7)));
+    }
+
+    /// 本文にもコメント候補にも一致しない(WHERE句の想定外)場合はパニックせず`None`。
+    #[test]
+    fn hit_location_is_none_when_neither_matches() {
+        assert_eq!(hit_location("本文には含まれない", "Rust", None), None);
     }
 
     fn ids(page: &Page<i32>) -> Vec<i32> {
