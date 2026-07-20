@@ -270,8 +270,43 @@ theorem createThread_atomic (sid : SessionId) (t b : String) :
   injection h with h1 _
   injection h1
 
+/-- `liftOption`(`findThread`/`findComment`等が使う早期リターン)は、`some`なら
+    `pure`、`none`なら`fail`なので、どちらの分岐でも状態は変わらない。
+    `guardNone_noWriteOnSuccess`の逆向き版。 -/
+theorem liftOption_noWriteOnSuccess (o : Option α) (e : Error) :
+    NoWriteOnSuccess (Action.liftOption o e) := by
+  unfold Action.liftOption
+  cases o with
+  | some a => exact pure_noWriteOnSuccess a
+  | none => exact fail_noWriteOnSuccess e
+
+/-- `findThread`(`get`のあとに`liftOption`)は成功時に状態を変えない。
+    `createComment_atomic`の証明で`requireAuth`と同じ形で使う。 -/
+theorem findThread_noWriteOnSuccess (tid : ThreadId) : NoWriteOnSuccess (findThread tid) := by
+  unfold findThread
+  exact bind_noWriteOnSuccess get_noWriteOnSuccess fun _ => liftOption_noWriteOnSuccess _ _
+
+/-- F07 コメント作成の原子性(decision 0002)。`createComment`は`requireAuth`→
+    `findThread`(スレッド存在検査)→本文空検査、の順に検査を重ねるだけで、実際に
+    `Db`を書き換える`set`(コメント追加)は全検査を通過した後の`tick`と合わせて
+    最後に一度だけ実行される。`createThread_atomic`と同じ構造(検査だけが
+    失敗しうる分岐で、検査を全て通過した後の末尾は失敗し得ない)。 -/
 theorem createComment_atomic (sid : SessionId) (tid : ThreadId) (b : String) :
-    NoWriteOnError (createComment sid tid b) := by sorry
+    NoWriteOnError (createComment sid tid b) := by
+  unfold createComment
+  apply bind_noWriteOnError (requireAuth_noWriteOnSuccess sid)
+  intro _
+  apply bind_noWriteOnError (findThread_noWriteOnSuccess tid)
+  intro _
+  apply bind_noWriteOnError (ensure_noWriteOnSuccess _ _)
+  intro _
+  -- 残るは`tick`・`get`・`set`・`pure`の末尾で、これは絶対に失敗しない
+  -- (NoWriteOnErrorは空虚に真)。createThread_atomicの末尾と同じ理由付け。
+  intro s0 e s' h
+  simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.set, Action.pure,
+    Action.modify, Action.get, tick] at h
+  injection h with h1 _
+  injection h1
 
 theorem deleteThread_atomic (sid : SessionId) (tid : ThreadId) :
     NoWriteOnError (deleteThread sid tid) := by sorry
@@ -528,11 +563,84 @@ theorem createThread_does_not_modify_existing_threads
           have heq : db.nextThreadId = t.id := by rw [ht'] at hid; exact hid
           exact Nat.lt_irrefl t.id (heq ▸ hlt)
 
-/-- C-05: コメント本文と作成者・作成日時は不変（`deleted` のみ変化しうる）。 -/
+/-- C-05: コメント本文と作成者・作成日時は不変（`deleted` のみ変化しうる）。
+
+    **`hnodup`/`hfresh`は必須の仮定**であり、外すと言明そのものが**偽**になる
+    (`thread_immutable`/decision 0025と全く同じ構造)。反例:
+    `comments := [⟨0,_,_,"a",_,false⟩, ⟨0,_,_,"z",_,false⟩]`のようにidが重複した
+    整形式でない`db`では、`steps = []`だけで
+    「`c' ∈ db.comments`かつ`c'.id = c.id`なら本文が一致する」が成り立たない
+    (F07実装セッションでこの反例を`native_decide`で実際に構成し確認した)。
+    当初この2仮定を欠いた形で書かれていたが、それは「後で証明する」ことが
+    原理的に不可能な偽の命題だったため、`createComment_does_not_modify_existing_comments`
+    (下記、F07スコープの単一操作版)が採ったのと同じ局所仮定を付けて**真の命題**へ直した。
+
+    **未証明(`sorry`)のまま残すが、これは「偽の命題を証明しようとしている」のではなく
+    「真だが未証明」である。** 証明には`Step`(F01〜F08全種)の各操作が
+    `comments`についてこの2性質を保つことを示す必要があり、F08(`deleteComment`)は
+    Rust側が未実装。F07単体のセッションでそこまで踏み込むのは過剰スコープと判断し、
+    この機能に対応する単一操作版に絞った(decision 0025と同じ判断基準)。F08の実装時に、
+    `runAll`についてこの2性質が保存されることを示して本体を埋める。 -/
 theorem comment_body_immutable (db : Db) (steps : List Step) (c : Comment)
+    (hnodup : (db.comments.map (·.id)).Nodup)
+    (hfresh : ∀ c ∈ db.comments, c.id < db.nextCommentId)
     (h : c ∈ db.comments) :
     ∀ c' ∈ (runAll steps db).comments, c'.id = c.id →
       c'.body = c.body ∧ c'.authorId = c.authorId ∧ c'.createdAt = c.createdAt := by sorry
+
+/-! #### F07スコープの補題: `createComment`は既存コメントを変更しない (C-05 / AC07-4)
+
+上の`comment_body_immutable`は`Step`（F01〜F08全種）を跨ぐ一般形で、F08の`deleteComment`が
+未実装のこのセッションでは過剰スコープ（上のコメント参照）。ここでは**`createComment`という
+単一操作**に絞り、C-05が要求する「作成後に他のコメントの内容を書き換えない」を
+直接証明する。`createThread_does_not_modify_existing_threads`と同じ形。 -/
+
+/-- `comment_body_immutable`と同様に、**`db`自体が既にID重複を持たない**
+    （`Wf.commentIdsDistinct`相当）という前提が要る。`Wf`構造体を丸ごと要求せず、
+    この証明に要る2性質だけを局所的な仮定として取る(`nodup_map_eq_of_mem`と同じ方針)。 -/
+theorem createComment_does_not_modify_existing_comments
+    (sid : SessionId) (tid : ThreadId) (body : String) (db : Db)
+    (hnodup : (db.comments.map (·.id)).Nodup)
+    (hfresh : ∀ c ∈ db.comments, c.id < db.nextCommentId)
+    (c : Comment) (h : c ∈ db.comments) :
+    ∀ c' ∈ ((createComment sid tid body) db).2.comments, c'.id = c.id →
+      c'.body = c.body ∧ c'.authorId = c.authorId ∧ c'.createdAt = c.createdAt := by
+  intro c' hc' hid
+  unfold createComment at hc'
+  -- `requireAuth sid db`で場合分け。未認証なら状態は書き変わらず`db`のまま。
+  cases hsess : db.sessions.find? (·.id = sid) with
+  | none =>
+    simp only [bind, Bind.bind, Action.bind, Action.get, Action.fail, requireAuth, hsess] at hc'
+    have heq := nodup_map_eq_of_mem hnodup hc' h hid; subst heq; exact ⟨rfl, rfl, rfl⟩
+  | some sess =>
+    -- `findThread tid db`で場合分け。スレッドが無ければ状態は書き変わらず`db`のまま。
+    cases hthread : db.threads.find? (·.id = tid) with
+    | none =>
+      simp only [bind, Bind.bind, Pure.pure, Action.bind, Action.get, Action.pure,
+        Action.fail, requireAuth, hsess, findThread, Action.liftOption, hthread] at hc'
+      have heq := nodup_map_eq_of_mem hnodup hc' h hid; subst heq; exact ⟨rfl, rfl, rfl⟩
+    | some thr =>
+      -- 本文の空検査で場合分け。空なら状態は書き変わらず`db`のまま。
+      cases hbody : Validation.nonEmptyText body with
+      | false =>
+        simp only [bind, Bind.bind, Pure.pure, Action.bind, Action.get, Action.pure,
+          Action.fail, requireAuth, hsess, findThread, Action.liftOption, hthread, hbody,
+          ensure_false_eq] at hc'
+        have heq := nodup_map_eq_of_mem hnodup hc' h hid; subst heq; exact ⟨rfl, rfl, rfl⟩
+      | true =>
+        -- ここまで来れば必ず成功し、`db.comments ++ [newComment]`が書き込まれる。
+        -- `c'`は元のリストにあったか、新規追加分かのいずれか。
+        simp only [bind, pure, Bind.bind, Pure.pure, Action.bind, Action.get, Action.set,
+          Action.pure, Action.modify, tick, requireAuth, hsess, findThread, Action.liftOption,
+          hthread, hbody, ensure_true_eq] at hc'
+        rw [List.mem_append, List.mem_singleton] at hc'
+        rcases hc' with hc' | hc'
+        · have heq := nodup_map_eq_of_mem hnodup hc' h hid; subst heq; exact ⟨rfl, rfl, rfl⟩
+        · -- 新規コメントは`id := db.nextCommentId`。`hfresh`よりこれは`c.id`と一致しない。
+          exfalso
+          have hlt : c.id < db.nextCommentId := hfresh c h
+          have heq : db.nextCommentId = c.id := by rw [hc'] at hid; exact hid
+          exact Nat.lt_irrefl c.id (heq ▸ hlt)
 
 /-- C-07 / C-08: 論理削除は不可逆かつ非破壊。一度立った `deleted` は下りず、
     行そのものも消えない。 -/
