@@ -1,10 +1,34 @@
-//! コメントの読み取り(F10スレッド詳細表示、issues/10)。
+//! コメントの永続化(F07コメント作成・F10スレッド詳細表示、issues/07・issues/10)。
 //!
-//! F07(コメント作成)・F08(コメント削除)がまだ無いため、挿入用のヘルパはここには
-//! 置かない(結合テストは`db/threads.rs`のテストと同じく`comments`テーブルへ
-//! 直接INSERTする)。論理削除(C-07)は`deleted_at`の有無で判定する。
+//! `insert`はF07(web/thread_detail.rs)が使う。F08(コメント削除)はまだ無いため、
+//! 論理削除(`deleted_at`)を立てるヘルパはここには置かない
+//! (結合テストは引き続き`comments`テーブルへ直接UPDATEする)。
 
 use sqlx::PgExecutor;
+
+/// 新規コメントを1件挿入し、採番されたIDを返す。
+///
+/// `executor`は`&PgPool`にも`&mut Transaction`にも当てはまるようジェネリックに
+/// してある(decision 0002: web/thread_detail.rsのハンドラは`db::with_transaction`で
+/// 開いたトランザクション越しにこれを呼ぶ、`db/threads.rs::insert`と同じ形)。
+pub async fn insert<'e, E>(
+    executor: E,
+    thread_id: i64,
+    author_id: i64,
+    body: &str,
+) -> Result<i64, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    sqlx::query_scalar!(
+        "insert into comments (thread_id, author_id, body) values ($1, $2, $3) returning id",
+        thread_id,
+        author_id,
+        body,
+    )
+    .fetch_one(executor)
+    .await
+}
 
 /// スレッド詳細のコメント一覧1件ぶんの行。本文は削除済みでも生の値をそのまま返す
 /// ―― 固定文言(`＜このコメントは削除されました＞`、C-01)への差し替えは
@@ -95,6 +119,34 @@ mod tests {
             .await
             .unwrap();
         }
+    }
+
+    #[sqlx::test]
+    async fn insert_returns_a_fresh_id(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = crate::db::threads::insert(&pool, uid, "タイトル", "本文")
+            .await
+            .unwrap();
+
+        let cid = insert(&pool, tid, uid, "コメント本文").await.unwrap();
+        assert!(cid > 0);
+    }
+
+    #[sqlx::test]
+    async fn insert_persists_body_verbatim_and_is_not_deleted(pool: PgPool) {
+        // C-05: 保存時点の値がそのまま入ること(トリム等はdomain層の責務でここでは検証しない)。
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = crate::db::threads::insert(&pool, uid, "タイトル", "本文")
+            .await
+            .unwrap();
+
+        insert(&pool, tid, uid, "コメント本文です").await.unwrap();
+
+        let rows = list_by_thread(&pool, tid).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "コメント本文です");
+        assert_eq!(rows[0].author_display_name, "テストユーザー01");
+        assert!(!rows[0].deleted);
     }
 
     #[sqlx::test]

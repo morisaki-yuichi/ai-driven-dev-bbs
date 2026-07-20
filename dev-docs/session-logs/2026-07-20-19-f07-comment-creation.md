@@ -1,0 +1,71 @@
+# セッションログ: 2026-07-20 #19 F07 コメント作成
+
+- フェーズ: 4（機能実装）
+- 今回やったこと:
+  - `docs/product/issues/07_comment_creation.md`・`formal/README.md`・decision 0025・0027・`formal/Bbs/{Op,Db,Query,Invariant}.lean`・`app/src/db/comments.rs`・`app/src/web/thread_create.rs`・`app/src/web/thread_detail.rs`・`dev-docs/ui-ux-guidelines.md` を読み、既存パターン（F05のPOSTハンドラ、F10の詳細表示）を把握した。
+  - main（23bef48）から `feat/comment-creation` ブランチを作成した。
+  - 進行はオーケストレーション形式（S1 状態復元 → G1 スコープ承認 → S2 証明+TDD実装 → S3 レビュー → G3 裁定 → 裁定反映）で行った。
+  - **S1（状態復元）**: `deletion_irreversible`（F08範囲）を今回のスコープから除外する根拠を調査した。結論は存在命題であり、`Op.lean` に `comments` から要素を削除する操作が1つも無いため id 一意性の仮定なしでも成り立つ見込みであること、かつ前提 `c.deleted = true` を満たすコメントを F01〜F07 の操作だけでは作れないことを確認した。
+  - **G1（スコープ承認）**: ユーザーが以下を承認した。
+    - `createComment_atomic`（decision 0002）と `comment_bumps_lastUpdated`（decision 0027）の証明。
+    - `comment_body_immutable` の言明修正、および `createComment` 単体に絞った狭い版の証明。
+    - `Wf` への時計支配フィールドの集約（decision 0027 が F07 での実施を予告していた作業）。
+    - `deletion_irreversible` は今回触れない（F08の範囲、理由はS1の調査結果）。
+    - 二重送信抑止は実装しない（F01・F05に続く3度目の裁定として「現状維持」が確定）。
+  - **S2（証明+TDD実装）**:
+    - Lean（Red強化・実装前必須）:
+      - `comment_body_immutable` の反例をスクラッチファイル（`native_decide`、確認後削除）で実際に確認した。id重複した不整形な `db` と `steps = []` だけで反証できることを確認し、`thread_immutable`（decision 0025）と同じ構造の欠陥と判明。
+      - `comment_body_immutable` に `hnodup`/`hfresh` の局所仮定を追加して真の形に直し、`sorry` のまま残した。decision 0025 の先例に倣い、`createComment` 単体に絞った `createComment_does_not_modify_existing_comments` を新設・証明した。
+      - `createComment_atomic`（decision 0002）を証明した（`findThread_noWriteOnSuccess`・`liftOption_noWriteOnSuccess` を補助として新設）。
+      - `Wf` 構造体に `clockDominatesThreads`・`clockDominatesComments` を追加した（decision 0027 選択肢(a)）。波及確認の過程で、decision 0027 が「F01〜F05 で既に証明済み」と記述していた `Wf` 保存補題群が実際にはコードベースに存在しないことを発見した。`wf_empty` が `by sorry` から `by constructor <;> simp [Db.empty]` の1行証明で済むようになった副産物も得た。
+      - `comment_bumps_lastUpdated` を、局所仮定 `hclockT`/`hclockC` を `Wf db` からの導出（`hwf.clockDominatesThreads`/`hwf.clockDominatesComments`）に置き換える形で完全に証明した（`maxTime_append_singleton`・`maxTime_le`・`nat_max_assoc` を補助として新設）。core Lean の `omega` が `Nat.max` を直接扱えないことが判明し、`Nat.max_def` 経由の `split`/`omega` に自前で還元した。
+      - `lake build` で44件の煙試験（`Bbs.Scenario`）が全て通ることを確認した。
+    - Rust実装（TDD: Red→Green→Refactor）:
+      - `domain/validation.rs` に `create_comment_validation`（本文の空チェックのみ、decision 0004のトリム方針）を追加し、単体テスト4件を先に書いてから実装した。
+      - `db/comments.rs` に `insert`（ジェネリックexecutor、decision 0002対応）を追加し、`#[sqlx::test]` 2件を先に書いてから実装した。
+      - `web/params.rs` に `CreateCommentForm`（CSRFトークン必須、decision 0021）を追加した。
+      - `tests/comment_create_test.rs`（結合テスト8件）を先に書き、ルート未実装のため全件404で落ちること（Red）を確認した。
+      - `web/thread_detail.rs` を拡張し、`show`（GET）・`create_comment`（POST /threads/{id}/comments）が共通の `render_detail` を介して描画する形にリファクタした。バリデーション順序は `formal/Bbs/Op.lean` の `createComment`（requireAuth→findThread→本文空検査）と一致させた。
+      - `templates/thread_detail.html` にコメント投稿フォームを追加した（メッセージエリア・novalidate・field-error・aria属性、`thread_create.html` と同じパターン）。C-05/AC07-4により編集用のUIは追加していない。
+      - `web/mod.rs` に `POST /threads/{id}/comments` を `require_auth` 配下で配線した。
+      - `cargo test`（結合テスト8件含め全85+68件）・`cargo sqlx prepare -- --all-targets`・`cargo fmt`・`cargo clippy --all-targets`（警告ゼロ）を実行した。
+    - `/verify`（プロジェクト固有の `curl` ベース手順）で実挙動を確認した: ユーザー登録→ログイン→スレッド作成→コメント投稿が303でリダイレクトし、リダイレクト後のGETで即座にコメントが表示されること、空本文投稿がインラインエラー（200・フィールドエラー・共通メッセージ）になり書き込みが起きないこと、コメント編集用エンドポイント（`/threads/{id}/comments/{cid}/edit` 等）が404で存在しないこと、未ログインPOSTが`/login`へリダイレクトし書き込みが起きないこと、存在しないスレッドへのPOSTが404になることを実際のHTTPレスポンスとDB照会で確認した。
+    - decision 0027 を「実施」節・変更履歴で更新し、決定済みだった方針が実施済みになったことを記録した。
+  - **S3（レビュー）**: 重大な指摘は0件。確認・発見した内容は次のとおり。
+    - `Wf` に conjunct（`clockDominatesThreads`・`clockDominatesComments`）を足す操作は `Wf` を強くする方向の変更であり、`Wf` を仮定に取る既存定理が偽になることはないこと、`Wf` を結論に持つのは `wf_empty` のみで証明済みであることを確認した。
+    - `Db.lean` の `tick` が `clock+1` の後の値を返し新レコードに付けるため、全操作を通じて `clockDominates*` が保存されること、S2で追加した局所仮定が到達可能な全状態で真であることを確認した。
+    - `#print axioms` で `wf_empty`・`comment_bumps_lastUpdated`・`createComment_atomic` 等が `sorryAx` を含まないことを確認した。
+    - XSS対策の確認として6種の実ペイロード（`</textarea><script>`・`' onmouseover='` 等）を実際に投稿し、バリデーション失敗時の textarea 再描画経路も含めてエスケープを脱出できないことを確認した。
+    - F09（一覧表示）の `comment_count`・`last_updated_at` との結線を、実際に3件投稿して `count` が 0→3 に、`last_updated_at` が前進することを実測で確認した。
+    - decision 0027 の事実誤認を裏付けた。main時点の `formal/Bbs/Invariant.lean` 449行目に「`Wf`全体の保存はF01〜F03の時点でも証明されておらず」と既に書かれており、0027 の「F01〜F05で証明済み」という記述は同一ファイル内の記述と矛盾していた。
+    - 重要な乖離を発見した: モデルの `tick` は厳密増加する論理時計で相異なる時刻を保証し decision 0009 もそれに依拠するが、実装の `created_at` は `default now()`（PostgreSQL のトランザクション開始時刻・ミリ秒精度）であり、1トランザクション内の連続 INSERT 2件が同一の `created_at` を持ちうることを実測で確認した。したがって `comment_bumps_lastUpdated` が保証する厳密不等号は実装側では成立しない場合がある。
+  - **G3（裁定）・裁定反映**: ユーザーが裁定し、以下を反映した。
+    - スレッド存在確認をトランザクション内に移した（`web/thread_detail.rs::create_comment`）。F06（スレッド削除）実装後に、確認とINSERTの間に削除が割り込むと「404であるべき経路がFK違反による500になる」事態を防ぐため。
+    - `render_detail` の `ValidationFailure` 分岐を網羅 `match` にした（ワイルドカード `_` を使わず、将来variantが増えたときに無言でコンパイルが通ることを防ぐ）。
+    - 結合テスト（`tests/comment_create_test.rs`）のセクション区切りの取得方法を、本文リテラルの検索から `aria-label` 属性（`コメント一覧`・`コメント投稿`）の検索に変更した（Askamaのエスケープにより本文由来の文字列と衝突しないため）。
+    - decision 0027 の誤記3箇所（「F01〜F05で証明済みのWf保存補題」という事実誤認）を訂正し、変更履歴に発覚の経緯を追記した。決定内容自体（`Wf`への時計支配フィールド集約、選択肢(b)を経て(a)へ移行する方針）は変更していない。
+    - モデルと実装の時刻の乖離を decision 0029 として新規記録した（乖離を許容、実害は decision 0009 のidタイブレークにより限定的と判断）。
+- 決めたこと（関連 decision 番号があれば併記）:
+  - `comment_body_immutable` の言明修正・`createComment_does_not_modify_existing_comments` の新設は decision 0025 のスコープ限定方針をそのまま適用したもので、新規decisionは不要と判断した。
+  - `Wf` への時計支配フィールド集約は decision 0027 の「決定」節で既に確定していた方針の実施であり、decision 0027 の「実施」節に追記するのみとした（新規番号は起こしていない）。
+  - `comment_bumps_lastUpdated` に必要な局所仮定を `Wf db` からの導出に置き換え、証明を完了した（decision 0027）。
+  - 二重送信抑止は実装しない（F01・F05に続く3度目の裁定として承認済みの結論。新規decisionは不要）。
+  - コメント編集UI（C-05）は作らない（承認済みのスコープ）。
+  - スレッド存在確認をトランザクション内に統一する（G3の裁定、decision 0002の「1リクエスト＝1トランザクション」の趣旨を徹底したもの。新規decisionは不要）。
+  - 形式モデルの論理時計（`tick`）と実装の `created_at`（`default now()`）の乖離を許容する（decision 0029、新規）。
+  - decision 0027 の事実誤認3箇所を訂正した（決定内容自体は不変、変更履歴に経緯を追記）。
+- 次にやること:
+  - ユーザー承認後、コミット（1論理変更1コミットの単位で分割するか判断）。コミットとPRは本セッションでは行っていない。
+  - `/code-review`・`/security-review` を次のステップとして別途実行する（今回のスコープ外、ユーザー指示済み）。
+  - F08（コメント削除）着手時に、`deletion_irreversible` の反例有無の検査、`comment_body_immutable`・`thread_immutable` の一般形（`Step`全種を跨ぐ形）の証明可否を判断する。同セッションで `Wf` 保存補題の整備も行う（G3で見送りが確定）。
+  - F11・F12（ページネーション関連）で、ページリンクが `q`・`sort` を落とす件を拾う。
+- 未解決事項:
+  - `Wf` 保存補題が無いため、`comment_bumps_lastUpdated` を非空虚に適用できない（`Wf` をdischargeできるのは `wf_empty` のみで、空DBにはスレッドが存在しないため）。F08（削除系が揃うサイクル）で整備する。
+  - `comment_body_immutable` の一般形と `thread_immutable` の本体は `sorry` のままで、F08で埋める。
+  - `deletion_irreversible` はF08で扱う（今回は未着手、理由はS1参照）。
+  - ページリンクが `q`・`sort` を落とす件はF11・F12で拾う。
+  - 必須フィールド欠落POSTが403でなく422になる件（見送り、原因未調査のまま持ち越し）。
+  - 未ログインで未知URLを踏んだ応答に `no-store` が付かない件（見送り、持ち越し）。
+  - 入力保持テストが実際にはassertしていない件（原理的に空系以外で失敗させられないため、G3で見送りが確定）。
+  - コメント本文の最大長は仕様が無言のため未定（G3で見送りが確定、今回は制限を設けていない）。
+  - フォーム見出しが条件分岐の外にある件（`require_auth` 配下で到達不能なため実害なし、G3で見送りが確定）。

@@ -47,6 +47,12 @@ pub fn build_router(pool: PgPool) -> Router {
         // 静的セグメント"/threads/new"と動的セグメント"/threads/{id}"はaxum(matchit)が
         // 登録順に関わらず静的側を優先するため、両立できる。
         .route("/threads/{id}", get(thread_detail::show))
+        // F07(コメント作成、issues/07)。ログイン中のユーザーのみ作成可能なので
+        // 他の"/threads/{id}"系ルートと同じくrequire_auth配下(下の.route_layer)に置く。
+        .route(
+            "/threads/{id}/comments",
+            post(thread_detail::create_comment),
+        )
         .route_layer(from_fn_with_state(pool.clone(), middleware::require_auth))
         // P01(ログイン)・P02(登録)は未ログインで到達できる(F01/F02)。
         .route("/register", get(register::show).post(register::submit))
