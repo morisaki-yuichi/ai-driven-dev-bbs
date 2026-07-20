@@ -376,6 +376,61 @@ async fn unknown_url_404_without_login_shows_guest_header(pool: PgPool) {
     );
 }
 
+/// 持ち越し修正の回帰: 未ログインで未知URLを踏んだ404にも`no-store`が付くこと
+/// (C-11)。`middleware::reflect_auth_on_error_page`は以前、セッション未解決
+/// (`let (Some(session_id), Some(csrf_token)) = ... else { return response }`)の
+/// 早期returnが`no-store`の付与より前にあり、**未ログイン**でこの経路を通ると
+/// ヘッダーが一切付かなかった(ログイン中の`unknown_url_404_while_logged_in_has_no_store`
+/// は既存で緑だったため、この非対称は見落とされていた)。
+#[sqlx::test]
+async fn unknown_url_404_without_login_has_no_store(pool: PgPool) {
+    let response = get_unknown_url(&pool, None).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL),
+        Some(&header::HeaderValue::from_static("no-store")),
+        "未ログインで未知URLを踏んだ404にno-storeが付いていない"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get_all(header::CACHE_CONTROL)
+            .iter()
+            .count(),
+        1,
+        "二重付与されていないこと"
+    );
+}
+
+/// 持ち越しレビュー指摘: `require_auth`配下(`/threads/{id}`)で起きる404にも
+/// `Cache-Control: no-store`が付き、かつちょうど1個であること。既存の
+/// `unknown_url_404_*_has_no_store`はいずれも`fallback`(未知URL、`require_auth`の
+/// **外**)を叩いており、`require_auth`(付与1)と`reflect_auth_on_error_page`
+/// (`AuthAwareErrorPage`マーカーを見て付与2、ただし`insert`で上書き)の両方を
+/// 通る経路は未検証だった(`middleware.rs`モジュールdoc参照)。
+#[sqlx::test]
+async fn nonexistent_thread_id_under_require_auth_404_has_no_store_exactly_once(pool: PgPool) {
+    insert_test_user(&pool, "testuser_01", "TestPassword123!").await;
+    let cookie_header = login(&pool, "testuser_01", "TestPassword123!").await;
+
+    let response = get_detail(&pool, Some(&cookie_header), "999999").await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL),
+        Some(&header::HeaderValue::from_static("no-store")),
+        "require_auth配下の404にno-storeが付いていない"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get_all(header::CACHE_CONTROL)
+            .iter()
+            .count(),
+        1,
+        "require_authとreflect_auth_on_error_pageの二重付与が起きていないこと"
+    );
+}
+
 /// スレッド一覧のカードから詳細への導線が実際に機能する(F09→F10の配線確認)。
 #[sqlx::test]
 async fn thread_list_card_link_navigates_to_the_correct_detail_page(pool: PgPool) {

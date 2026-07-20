@@ -1,4 +1,13 @@
-//! 認証ガード(C-09)と`Cache-Control: no-store`(C-11/AC03-2)を1箇所に集約する。
+//! 認証ガード(C-09)を扱う。`Cache-Control: no-store`(C-11/AC03-2)はここに
+//! 集約されているわけではない ―― 本モジュールの`require_auth`と
+//! `reflect_auth_on_error_page`の2箇所に加え、`register.rs`・`login.rs`・
+//! `profile.rs`・`thread_create.rs`の各ハンドラでも個別に付与しており、実態は
+//! 計5箇所。`profile.rs`・`thread_create.rs`は`require_auth`配下のルートなので
+//! `require_auth`が付与した後にハンドラ側でも付与することになり設計上は冗長だが、
+//! 両者とも`insert`(上書き)であるため実害(二重ヘッダー化)は起きない
+//! (回帰テストは`unknown_url_404_*_has_no_store`(`require_auth`の外)・
+//! `nonexistent_thread_id_under_require_auth_404_has_no_store_exactly_once`
+//! (`require_auth`配下、いずれも`tests/thread_detail_test.rs`)を参照)。
 //! decision 0008: ブラウザバックはSSR/MPAの範囲でHTTPレイヤの責務として扱う。
 
 use axum::{
@@ -72,13 +81,23 @@ pub async fn reflect_auth_on_error_page(
     let session_id = jar.get(SESSION_COOKIE_NAME).map(|c| c.value().to_string());
     let csrf_token = req.extensions().get::<CsrfToken>().map(|t| t.0.clone());
 
-    let response = next.run(req).await;
+    let mut response = next.run(req).await;
     if response.extensions().get::<AuthAwareErrorPage>().is_none() {
         return response;
     }
 
+    // マーカーを確認した時点で一律に付与する(持ち越し修正: 以前はこの付与が
+    // セッション未解決時の早期returnより後にあり、**未ログインで未知URLを踏んだ404**
+    // にだけ`no-store`が欠落していた ―― `fallback`(未知URL)は`require_auth`の外に
+    // あるため、他のどこからも付与されない経路だった)。`insert`は上書きなので、
+    // `require_auth`配下で既に付与済みの場合(この後の分岐で本文が描き直される経路)
+    // でも二重付与にはならない。
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+
     // ログアウトフォームにはCSRFトークンが要る(views::CurrentUserのdocコメント)。
-    // どちらか欠けるなら未ログイン表示のまま返す。
+    // どちらか欠けるなら未ログイン表示のまま返す(no-storeは既に付与済み)。
     let (Some(session_id), Some(csrf_token)) = (session_id, csrf_token) else {
         return response;
     };
@@ -92,19 +111,9 @@ pub async fn reflect_auth_on_error_page(
         return response;
     };
 
-    // ステータス・ヘッダー(`Set-Cookie`等)は元の応答のものを保つ。差し替えるのは本文だけ。
+    // ステータス・ヘッダー(`Set-Cookie`・`Cache-Control`等)は元の応答のものを保つ
+    // (`Cache-Control`は上で付与済み)。差し替えるのは本文だけ。
     let (mut parts, _) = response.into_parts();
     parts.headers.remove(header::CONTENT_LENGTH);
-    let mut response = Response::from_parts(parts, Body::from(body));
-
-    // 本文を認証済みヘッダーで描き直した以上、このページ固有のキャッシュ制御を
-    // ここで確定させる(C-11/AC03-2、decision 0008)。`require_auth`配下の経路
-    // (`/threads/{id}`等)では既に`require_auth`が付与済みだが、`insert`は
-    // 上書きであり`append`ではないため二重には付かない。`fallback`(未知URL、
-    // `require_auth`の外)はここを通らない限りこのヘッダーを持たないため、
-    // この経路がログイン中に付与する唯一の場所になる。
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    Response::from_parts(parts, Body::from(body))
 }
