@@ -509,6 +509,86 @@ async fn delete_button_is_hidden_for_an_already_deleted_comment(pool: PgPool) {
     );
 }
 
+/// 持ち越し事項(1): 対象限定を壊す変異(`db/comments.rs::delete`の`where`を`or true`等に
+/// 壊す)の検出層。結合層(Router全体)を通した状態で、削除対象と無関係な**同一スレッド内の
+/// 別コメント**が巻き添えで削除済みにならないことを見る(F04で結合スイートがこの種の
+/// 分離ケースを欠いていたことが判明したのと同じパターン)。
+#[sqlx::test]
+async fn deleting_a_comment_does_not_affect_another_comment_in_the_same_thread(pool: PgPool) {
+    let uid = insert_test_user(&pool, "testuser_01", "TestPassword123!").await;
+    let tid = bbs::db::threads::insert(&pool, uid, "スレッド", "本文")
+        .await
+        .unwrap();
+    let target = bbs::db::comments::insert(&pool, tid, uid, "削除される本文")
+        .await
+        .unwrap();
+    let victim = bbs::db::comments::insert(&pool, tid, uid, "無関係なコメント")
+        .await
+        .unwrap();
+    let cookie_header = login(&pool, "testuser_01", "TestPassword123!").await;
+    let csrf_token = csrf_token_from_cookie_header(&cookie_header);
+
+    let app = bbs::web::build_router(pool.clone());
+    let response = app
+        .oneshot(post_delete_comment_request(
+            tid,
+            target,
+            &cookie_header,
+            &csrf_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(comment_deleted_at_is_set(&pool, target).await);
+    assert!(
+        !comment_deleted_at_is_set(&pool, victim).await,
+        "同一スレッド内の無関係なコメントが巻き添えで削除されてはならない"
+    );
+
+    let detail = get(&pool, &cookie_header, &format!("/threads/{tid}")).await;
+    let html = get_body_text(detail).await;
+    assert!(
+        html.contains("無関係なコメント"),
+        "無関係なコメントの本文がそのまま表示され続けるはず"
+    );
+}
+
+/// 持ち越し事項(1)続き: 犠牲オブジェクトを**別スレッド**に置いた版。
+#[sqlx::test]
+async fn deleting_a_comment_does_not_affect_a_comment_in_another_thread(pool: PgPool) {
+    let uid = insert_test_user(&pool, "testuser_01", "TestPassword123!").await;
+    let tid1 = bbs::db::threads::insert(&pool, uid, "スレッド1", "本文")
+        .await
+        .unwrap();
+    let tid2 = bbs::db::threads::insert(&pool, uid, "スレッド2", "本文")
+        .await
+        .unwrap();
+    let target = bbs::db::comments::insert(&pool, tid1, uid, "削除される本文")
+        .await
+        .unwrap();
+    let victim = bbs::db::comments::insert(&pool, tid2, uid, "無関係なコメント")
+        .await
+        .unwrap();
+    let cookie_header = login(&pool, "testuser_01", "TestPassword123!").await;
+    let csrf_token = csrf_token_from_cookie_header(&cookie_header);
+
+    let app = bbs::web::build_router(pool.clone());
+    let response = app
+        .oneshot(post_delete_comment_request(
+            tid1,
+            target,
+            &cookie_header,
+            &csrf_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        !comment_deleted_at_is_set(&pool, victim).await,
+        "別スレッドの無関係なコメントが巻き添えで削除されてはならない"
+    );
+}
+
 /// D18: 確認ダイアログ(`window.confirm`等)を使わない。agent-browserからの
 /// 操作性(H-02)のため、削除フォームは通常のPOSTフォームのみで構成され、
 /// `confirm(`やインラインの`onclick`ハンドラを含まない。

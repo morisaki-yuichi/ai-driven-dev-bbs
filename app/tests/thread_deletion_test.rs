@@ -476,6 +476,100 @@ async fn delete_button_is_shown_for_owners_thread_with_no_comments(pool: PgPool)
     assert!(html.contains("スレッドを削除する"));
 }
 
+/// 持ち越し事項(1): 対象限定を壊す変異(`db/threads.rs::delete`の`where`を`or true`等に
+/// 壊す)の検出層。結合層(Router全体)を通した状態で、削除対象と無関係な**別スレッド**が
+/// 巻き添えで消えないことを見る(F04で結合スイートがこの種の分離ケースを欠いていたことが
+/// 判明したのと同じパターン)。
+#[sqlx::test]
+async fn deleting_a_thread_does_not_delete_another_thread(pool: PgPool) {
+    let uid = insert_test_user(&pool, "testuser_01", "TestPassword123!").await;
+    let target = bbs::db::threads::insert(&pool, uid, "削除される", "本文")
+        .await
+        .unwrap();
+    let victim = bbs::db::threads::insert(&pool, uid, "無関係なスレッド", "本文")
+        .await
+        .unwrap();
+    let cookie_header = login(&pool, "testuser_01", "TestPassword123!").await;
+    let csrf_token = csrf_token_from_cookie_header(&cookie_header);
+
+    let app = bbs::web::build_router(pool.clone());
+    let response = app
+        .oneshot(post_delete_thread_request(
+            target,
+            &cookie_header,
+            &csrf_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(!thread_exists(&pool, target).await);
+    assert!(
+        thread_exists(&pool, victim).await,
+        "無関係な別スレッドが巻き添えで消えてはならない"
+    );
+
+    let detail = get(&pool, &cookie_header, &format!("/threads/{victim}")).await;
+    assert_eq!(
+        detail.status(),
+        StatusCode::OK,
+        "無関係なスレッドは引き続き表示できるはず"
+    );
+}
+
+/// 持ち越しレビュー指摘で名称・コメントを訂正: このテストが実際に固定しているのは
+/// **`comments.thread_id`の`on delete no action`というFK制約そのもの**であり、
+/// `threads::delete`の`where`条件のスコープではない。`where`条件を`or true`等に
+/// 広げる変異が入っても、victimスレッドにはコメントが紐づいているため、
+/// `delete from threads where ...`の実行自体がFK制約違反として失敗する
+/// (`.execute(...)?`がErrを返し、呼び出し元がpanicする)。この場合、下の
+/// `assert!(thread_exists(&pool, victim).await)`まで到達する前に検出されており、
+/// この assertion 自体は原理的に失敗し得ない(victimに実際にコメントが紐づく限り、
+/// FKがDBレベルで巻き添え削除を拒否するため)。
+///
+/// 「`where`条件のスコープが別スレッドまで広がっていないか」を直接見たい場合は、
+/// コメントを持たない victim を使う`deleting_a_thread_does_not_delete_another_thread`
+/// (下記)がそれをスレッド単位でカバーしている ―― そちらはFKの保護を受けない
+/// (victimにコメントが無い)ため、`where`条件が壊れれば`thread_exists`の
+/// assertionが実際に赤くなる。
+///
+/// テストのロジック自体(FK制約が実際に効いていることの固定)には価値があるため
+/// 変更しない。
+#[sqlx::test]
+async fn fk_constraint_prevents_thread_deletion_from_removing_comments_of_another_thread(
+    pool: PgPool,
+) {
+    let uid = insert_test_user(&pool, "testuser_01", "TestPassword123!").await;
+    let target = bbs::db::threads::insert(&pool, uid, "削除される", "本文")
+        .await
+        .unwrap();
+    let victim = bbs::db::threads::insert(&pool, uid, "無関係なスレッド", "本文")
+        .await
+        .unwrap();
+    insert_comment(&pool, victim, uid, "無関係なコメント", far_future(), false).await;
+    let cookie_header = login(&pool, "testuser_01", "TestPassword123!").await;
+    let csrf_token = csrf_token_from_cookie_header(&cookie_header);
+
+    let app = bbs::web::build_router(pool.clone());
+    let response = app
+        .oneshot(post_delete_thread_request(
+            target,
+            &cookie_header,
+            &csrf_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(thread_exists(&pool, victim).await);
+
+    let detail = get(&pool, &cookie_header, &format!("/threads/{victim}")).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let html = get_body_text(detail).await;
+    assert!(
+        html.contains("無関係なコメント"),
+        "無関係なスレッドのコメントが巻き添えで消えてはならない"
+    );
+}
+
 /// D18相当(decision 0030と同じ裁定をスレッド削除に適用): 確認ダイアログ
 /// (`window.confirm`等)を使わない。agent-browserからの操作性(H-02)のため、
 /// 削除フォームは通常のPOSTフォームのみで構成され、`confirm(`や

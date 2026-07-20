@@ -561,6 +561,57 @@ mod tests {
         assert!(!delete(&pool, 999_999).await.unwrap());
     }
 
+    /// 持ち越し事項(1): 対象限定を壊す変異(`where`を`or true`等にする)の検出層。
+    /// これまでのテストはいずれもDB内に対象スレッド1件しか無い状態で検証しており、
+    /// 「削除対象**以外**が生存すること」を確認していなかった(F04で結合層に見つかった
+    /// 同種の穴と同じパターン)。犠牲オブジェクト(削除対象と無関係な2件目のスレッド)を
+    /// 用意し、削除後もそれが残っていることを見る。
+    #[sqlx::test]
+    async fn delete_does_not_remove_another_thread(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let target = insert(&pool, uid, "削除される", "本文").await.unwrap();
+        let victim = insert(&pool, uid, "無関係なスレッド", "本文")
+            .await
+            .unwrap();
+
+        assert!(delete(&pool, target).await.unwrap());
+
+        assert!(find_by_id(&pool, target).await.unwrap().is_none());
+        assert!(
+            find_by_id(&pool, victim).await.unwrap().is_some(),
+            "無関係な別スレッドが巻き添えで消えてはならない"
+        );
+    }
+
+    /// 持ち越し事項(1)続き: F06は物理削除(decision 0014)であり、`comments`は
+    /// `threads`への外部キーに`on delete`指定が無い(`no action`)。削除対象自身は
+    /// コメント0件でも、**別スレッドに紐づくコメント**が巻き添えで消えないことを
+    /// 固定する(`on delete no action`により本来DBが拒否するはずの操作だが、
+    /// `where`条件が対象限定を失う変異が起きた場合に備え、テストで直接確認する)。
+    #[sqlx::test]
+    async fn delete_does_not_remove_comments_belonging_to_another_thread(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let target = insert(&pool, uid, "削除される", "本文").await.unwrap();
+        let victim = insert(&pool, uid, "無関係なスレッド", "本文")
+            .await
+            .unwrap();
+        insert_comment(&pool, victim, uid, "無関係なコメント", far_future(), false).await;
+
+        assert!(delete(&pool, target).await.unwrap());
+
+        assert!(find_by_id(&pool, victim).await.unwrap().is_some());
+        let victim_comment_count: i64 =
+            sqlx::query_scalar("select count(*) from comments where thread_id = $1")
+                .bind(victim)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            victim_comment_count, 1,
+            "無関係なスレッドのコメントが巻き添えで消えてはならない"
+        );
+    }
+
     /// TOCTOU対策の核心: 削除しようとしている最中に**別トランザクションが
     /// コメントを挿入してコミットした**場合、後から`delete`を確定させる側は
     /// その新しいコメントを見て削除を拒否する。「コメント0件の確認」と「削除」を
