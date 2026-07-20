@@ -1,3 +1,4 @@
+pub mod comments;
 pub mod password;
 pub mod sessions;
 pub mod threads;

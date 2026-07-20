@@ -1,0 +1,33 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<p><a href="/">スレッド一覧へ戻る</a></p>
+
+<article class="thread-detail">
+    <h1>{{ title }}</h1>
+    <p class="post-body">{{ body }}</p>
+    <p>{{ author_display_name }} さん・{{ created_at }}</p>
+</article>
+
+{# F06(スレッド削除)・F08(コメント削除)の「削除」ボタンはここに置かない
+   (ユーザー承認済みのスコープ ―― issue 10 のACのうちこの2点は今回実装しない)。 #}
+
+<section class="comments" aria-label="コメント一覧">
+    <h2>コメント</h2>
+    {% if comments.is_empty() %}
+    <p class="empty-state">コメントはまだありません。</p>
+    {% else %}
+    {% for comment in comments %}
+    {# C-01/AC08-2/AC10-3: 削除済みコメントは本文だけを固定文言に差し替え、
+       作成者・作成日時は維持する。差し替え自体はハンドラ側(render_comment_body)で
+       済ませてあるので、テンプレートは受け取った本文をそのまま出すだけでよい。 #}
+    <article class="comment">
+        <p class="post-body">{{ comment.body }}</p>
+        <p>{{ comment.author_display_name }} さん・{{ comment.created_at }}</p>
+    </article>
+    {% endfor %}
+    {% endif %}
+</section>
+{% endblock %}

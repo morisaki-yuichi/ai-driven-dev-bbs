@@ -79,6 +79,40 @@ where
     .await
 }
 
+/// P04スレッド詳細(F10)に表示する1件。一覧(`ThreadListRow`)と異なり、
+/// コメント数・最終更新日時は持たない(詳細画面はコメント自体を列挙するので不要、
+/// ユーザー承認済みのスコープ)。
+pub struct ThreadDetailRow {
+    pub title: String,
+    pub body: String,
+    pub author_display_name: String,
+    pub created_at: sqlx::types::time::OffsetDateTime,
+}
+
+/// IDでスレッドを1件取得する。存在しない場合は`None`。
+///
+/// decision 0014によりスレッド削除は物理削除なので、`threads`に行が無いことは
+/// 「存在しない」「削除済み」のどちらも意味する ―― 呼び出し側(`web/thread_detail.rs`)は
+/// `None`を一律`DomainError::NotFound`(C-10)に倒せばよく、削除フラグを別途見る必要が無い。
+pub async fn find_by_id<'e, E>(executor: E, id: i64) -> Result<Option<ThreadDetailRow>, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    sqlx::query_as!(
+        ThreadDetailRow,
+        r#"
+        select threads.title, threads.body, threads.created_at,
+               users.display_name as author_display_name
+        from threads
+        join users on users.id = threads.author_id
+        where threads.id = $1
+        "#,
+        id
+    )
+    .fetch_optional(executor)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +267,25 @@ mod tests {
 
         let rows = list_all(&pool).await.unwrap();
         assert_eq!(rows[0].last_updated_at, far_future());
+    }
+
+    /// F10(スレッド詳細): IDで1件取得でき、作成者の表示名まで解決されている。
+    #[sqlx::test]
+    async fn find_by_id_returns_the_matching_thread(pool: PgPool) {
+        let uid = insert_test_user(&pool, "testuser_01", "テストユーザー01").await;
+        let tid = insert(&pool, uid, "タイトル", "本文").await.unwrap();
+
+        let row = find_by_id(&pool, tid).await.unwrap().unwrap();
+        assert_eq!(row.title, "タイトル");
+        assert_eq!(row.body, "本文");
+        assert_eq!(row.author_display_name, "テストユーザー01");
+    }
+
+    /// C-10/decision 0014: 存在しないIDは`None`(呼び出し側で404に倒す)。
+    /// スレッド削除は物理削除なので、削除済みも同じ`None`経路を通る。
+    #[sqlx::test]
+    async fn find_by_id_returns_none_for_a_nonexistent_id(pool: PgPool) {
+        let row = find_by_id(&pool, 999_999).await.unwrap();
+        assert!(row.is_none());
     }
 }
