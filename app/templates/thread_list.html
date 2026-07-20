@@ -3,10 +3,22 @@
 {% block title %}スレッド一覧{% endblock %}
 
 {% block content %}
-{# F03のスコープではlayout.html経由の最小スタブに留める。検索・ソート・
-   ページネーションを含む一覧本体の実装はF09の範囲(dev-docs/foundation-plan.md)。
-   ここで最低限保証したいのは、ログイン後にlayout.htmlのヘッダー(表示名・
-   プロフィール導線・ログアウトボタン)がagent-browserから見える形で描画される
-   ことそのもの(シナリオ01のログイン→ログアウトの通し実行に必要)。 #}
 <h1>スレッド一覧</h1>
+
+{# P03の主要要素の1つ(dev-docs/requirements-analysis.md §1.3)。P05(スレッド作成)への
+   唯一の導線であり、hoverでのみ現れる等の隠し要素にしない(ui-ux-guidelines §6)。 #}
+<p><a href="/threads/new">新規スレッド作成</a></p>
+
+{# 検索窓・ソート切替・ページネーションはF09〜F13の範囲として残す
+   (ユーザー承認済みのスコープ、dev-docs/foundation-plan.md)。ここではAC05-3
+   (作成後に一覧へ表示される)を満たすための最小限の実データ表示のみ行う。
+   0件時の「該当0件」表示・件数のハードコード回避を含む本格的な空状態表示は
+   F09で扱う。 #}
+{% for thread in threads %}
+<article class="thread-card">
+    <h2>{{ thread.title }}</h2>
+    <p>{{ thread.body }}</p>
+    <p>{{ thread.author_display_name }} さん・{{ thread.created_at }}</p>
+</article>
+{% endfor %}
 {% endblock %}
